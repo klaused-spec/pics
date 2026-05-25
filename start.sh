@@ -19,6 +19,14 @@ trap cleanup SIGINT SIGTERM
 
 # Backend
 echo "[PICS] Iniciando backend na porta 8000..."
+
+# Matar processo anterior na porta 8000 se existir
+if lsof -ti:8000 > /dev/null 2>&1; then
+    echo "[PICS] Matando processo anterior na porta 8000..."
+    kill $(lsof -ti:8000) 2>/dev/null
+    sleep 1
+fi
+
 cd "$SCRIPT_DIR/backend"
 source venv/bin/activate
 mkdir -p logs
@@ -34,7 +42,8 @@ for i in $(seq 1 60); do
     fi
     if [ $i -eq 60 ]; then
         echo "[PICS] ERRO: Backend não respondeu após 60s"
-        echo "[PICS] Verifique logs em backend/logs/backend.log"
+        echo "[PICS] Últimas linhas do log:"
+        tail -10 "$SCRIPT_DIR/backend/logs/backend.log" 2>/dev/null
         kill $BACKEND_PID 2>/dev/null
         exit 1
     fi
