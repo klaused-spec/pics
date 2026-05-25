@@ -21,6 +21,21 @@ mkdir -p logs
 uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee logs/backend.log &
 BACKEND_PID=$!
 
+# Aguardar backend ficar pronto
+echo "[PICS] Aguardando backend ficar pronto..."
+for i in $(seq 1 30); do
+    if curl -s http://localhost:8000/docs > /dev/null 2>&1; then
+        echo "[PICS] Backend pronto!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "[PICS] ERRO: Backend não respondeu após 30s"
+        kill $BACKEND_PID 2>/dev/null
+        exit 1
+    fi
+    sleep 1
+done
+
 # Frontend
 echo "[PICS] Iniciando frontend na porta 5173..."
 cd "$SCRIPT_DIR/frontend"
