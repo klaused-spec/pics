@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import Gallery from './pages/Gallery'
+import AlbumDetail from './pages/AlbumDetail'
 import MediaDetail from './pages/MediaDetail'
 import Search from './pages/Search'
 import Persons from './pages/Persons'
@@ -15,6 +16,7 @@ function App() {
       <Route path="/" element={<Layout />}>
         <Route index element={<Dashboard />} />
         <Route path="gallery" element={<Gallery />} />
+        <Route path="albums/:id" element={<AlbumDetail />} />
         <Route path="media/:id" element={<MediaDetail />} />
         <Route path="search" element={<Search />} />
         <Route path="persons" element={<Persons />} />

@@ -23,6 +23,14 @@ media_tags = Table(
     Column("tag_id", Integer, ForeignKey("tags.id"), primary_key=True),
 )
 
+# Tabela associativa entre Album e Media
+album_media = Table(
+    "album_media",
+    Base.metadata,
+    Column("album_id", Integer, ForeignKey("albums.id"), primary_key=True),
+    Column("media_id", Integer, ForeignKey("media.id"), primary_key=True),
+)
+
 
 class Media(Base):
     """Representa uma foto ou vídeo no sistema."""
@@ -76,6 +84,7 @@ class Media(Base):
     # Relacionamentos
     faces = relationship("Face", secondary=media_faces, back_populates="media_items")
     tags = relationship("Tag", secondary=media_tags, back_populates="media_items")
+    albums = relationship("Album", secondary=album_media, back_populates="media_items")
     duplicate_of = relationship("Media", remote_side=[id])
 
 
@@ -132,6 +141,22 @@ class Tag(Base):
 
     # Relacionamentos
     media_items = relationship("Media", secondary=media_tags, back_populates="tags")
+
+
+class Album(Base):
+    """Álbum criado pelo usuário para agrupar mídias."""
+    __tablename__ = "albums"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    cover_media_id = Column(Integer, ForeignKey("media.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    # Relacionamentos
+    media_items = relationship("Media", secondary=album_media, back_populates="albums")
+    cover_media = relationship("Media", foreign_keys=[cover_media_id])
 
 
 class ProcessingJob(Base):

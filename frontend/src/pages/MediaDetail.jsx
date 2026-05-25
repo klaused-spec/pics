@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getMediaById, getMediaNeighbors, getFileUrl, getStreamUrl, assignFace, unassignFace, confirmFace, ignoreFace, getPersons, createPerson, createManualFace } from '../api'
-import { ArrowLeft, ChevronLeft, ChevronRight, MapPin, Tag, User, Calendar, Camera } from 'lucide-react'
+import { getMediaById, getMediaNeighbors, getFileUrl, getStreamUrl, assignFace, unassignFace, confirmFace, ignoreFace, getPersons, createPerson, createManualFace, getAlbums, addMediaToAlbum } from '../api'
+import { ArrowLeft, ChevronLeft, ChevronRight, MapPin, Tag, User, Calendar, Camera, FolderPlus } from 'lucide-react'
 
 const FACE_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
 
@@ -21,6 +21,8 @@ function MediaDetail() {
   const [selectionStart, setSelectionStart] = useState(null)
   const [selectionRect, setSelectionRect] = useState(null)
   const [neighbors, setNeighbors] = useState({ prev_id: null, next_id: null })
+  const [albums, setAlbums] = useState([])
+  const [showAlbumPicker, setShowAlbumPicker] = useState(false)
 
   useEffect(() => {
     loadMedia()
@@ -373,6 +375,33 @@ function MediaDetail() {
               </div>
             </div>
           )}
+
+          {/* Adicionar ao álbum */}
+          <div>
+            <button
+              onClick={async () => { const res = await getAlbums(); setAlbums(res.data); setShowAlbumPicker(!showAlbumPicker) }}
+              className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+            >
+              <FolderPlus size={12} /> Adicionar ao álbum
+            </button>
+            {showAlbumPicker && (
+              <div className="mt-1 bg-gray-800 border border-gray-700 rounded p-2 max-h-32 overflow-auto">
+                {albums.length === 0 ? (
+                  <p className="text-xs text-gray-500">Nenhum álbum. Crie na Galeria.</p>
+                ) : (
+                  albums.map((a) => (
+                    <button
+                      key={a.id}
+                      onClick={async () => { await addMediaToAlbum(a.id, [media.id]); setShowAlbumPicker(false) }}
+                      className="block w-full text-left px-2 py-1 text-xs text-gray-300 hover:bg-gray-700 rounded"
+                    >
+                      {a.name} ({a.media_count})
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Rostos detectados */}
           {visibleFaces.length > 0 && (

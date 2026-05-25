@@ -1,3 +1,3 @@
-from .models import Media, Person, Face, Tag, ProcessingJob, media_faces, media_tags
+from .models import Media, Person, Face, Tag, Album, ProcessingJob, media_faces, media_tags, album_media
 
-__all__ = ["Media", "Person", "Face", "Tag", "ProcessingJob", "media_faces", "media_tags"]
+__all__ = ["Media", "Person", "Face", "Tag", "Album", "ProcessingJob", "media_faces", "media_tags", "album_media"]

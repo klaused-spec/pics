@@ -36,6 +36,16 @@ export const startFaceDetection = (batchSize = 10) => api.post('/jobs/face-detec
 export const startFullPipeline = () => api.post('/jobs/full-pipeline')
 export const startSync = () => api.post('/jobs/sync')
 
+// Álbuns
+export const getAlbums = () => api.get('/albums/')
+export const createAlbum = (name, description) => api.post('/albums/', { name, description })
+export const getAlbum = (id) => api.get(`/albums/${id}`)
+export const updateAlbum = (id, data) => api.put(`/albums/${id}`, data)
+export const deleteAlbum = (id) => api.delete(`/albums/${id}`)
+export const getAlbumMedia = (id, params) => api.get(`/albums/${id}/media`, { params })
+export const addMediaToAlbum = (albumId, mediaIds) => api.post(`/albums/${albumId}/media`, { media_ids: mediaIds })
+export const removeMediaFromAlbum = (albumId, mediaIds) => api.delete(`/albums/${albumId}/media`, { data: { media_ids: mediaIds } })
+
 // URLs de mídia
 export const getThumbnailUrl = (id, size = 300) => `/api/media/${id}/thumbnail?size=${size}`
 export const getFileUrl = (id) => `/api/media/${id}/file`
