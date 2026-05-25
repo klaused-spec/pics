@@ -1,0 +1,149 @@
+import datetime
+from sqlalchemy import (
+    Column, Integer, String, Float, DateTime, Boolean, Text,
+    ForeignKey, Table, JSON, LargeBinary
+)
+from sqlalchemy.orm import relationship
+
+from app.core.database import Base
+
+# Tabela associativa entre Media e Person (rostos detectados)
+media_faces = Table(
+    "media_faces",
+    Base.metadata,
+    Column("media_id", Integer, ForeignKey("media.id"), primary_key=True),
+    Column("face_id", Integer, ForeignKey("faces.id"), primary_key=True),
+)
+
+# Tabela associativa entre Media e Tag
+media_tags = Table(
+    "media_tags",
+    Base.metadata,
+    Column("media_id", Integer, ForeignKey("media.id"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("tags.id"), primary_key=True),
+)
+
+
+class Media(Base):
+    """Representa uma foto ou vídeo no sistema."""
+    __tablename__ = "media"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Caminho original e organizado
+    original_path = Column(String, nullable=False)
+    organized_path = Column(String, nullable=True, index=True)
+    filename = Column(String, nullable=False, index=True)
+
+    # Tipo de mídia
+    media_type = Column(String, nullable=False)  # "image" ou "video"
+    mime_type = Column(String, nullable=True)
+
+    # Hashes para detecção de duplicatas
+    sha256_hash = Column(String(64), nullable=True, index=True)
+    perceptual_hash = Column(String(64), nullable=True, index=True)
+
+    # Metadados EXIF
+    date_taken = Column(DateTime, nullable=True, index=True)
+    date_file = Column(DateTime, nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    duration_seconds = Column(Float, nullable=True)  # Para vídeos
+    camera_make = Column(String, nullable=True)
+    camera_model = Column(String, nullable=True)
+
+    # Geolocalização (EXIF GPS)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    altitude = Column(Float, nullable=True)
+
+    # Descrição IA (Azure OpenAI Vision)
+    ai_description = Column(Text, nullable=True)
+    ai_location = Column(String, nullable=True)
+    ai_scene_type = Column(String, nullable=True)
+    ai_objects = Column(JSON, nullable=True)  # Lista de objetos detectados
+    ai_processed = Column(Boolean, default=False, index=True)
+    ai_processed_at = Column(DateTime, nullable=True)
+
+    # Status de processamento
+    is_organized = Column(Boolean, default=False, index=True)
+    is_duplicate = Column(Boolean, default=False, index=True)
+    duplicate_of_id = Column(Integer, ForeignKey("media.id"), nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    # Relacionamentos
+    faces = relationship("Face", secondary=media_faces, back_populates="media_items")
+    tags = relationship("Tag", secondary=media_tags, back_populates="media_items")
+    duplicate_of = relationship("Media", remote_side=[id])
+
+
+class Person(Base):
+    """Representa uma pessoa identificada no sistema."""
+    __tablename__ = "persons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    is_confirmed = Column(Boolean, default=False)
+    avatar_face_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relacionamentos
+    faces = relationship("Face", back_populates="person")
+
+
+class Face(Base):
+    """Representa um rosto detectado em uma mídia."""
+    __tablename__ = "faces"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Posição do rosto na imagem (bounding box)
+    bbox_x = Column(Integer, nullable=True)
+    bbox_y = Column(Integer, nullable=True)
+    bbox_width = Column(Integer, nullable=True)
+    bbox_height = Column(Integer, nullable=True)
+
+    # Encoding do rosto (128-dimensional face encoding)
+    encoding = Column(LargeBinary, nullable=True)
+
+    # Pessoa associada
+    person_id = Column(Integer, ForeignKey("persons.id"), nullable=True, index=True)
+    confidence = Column(Float, nullable=True)
+    is_confirmed = Column(Boolean, default=False)
+    is_ignored = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relacionamentos
+    person = relationship("Person", back_populates="faces")
+    media_items = relationship("Media", secondary=media_faces, back_populates="faces")
+
+
+class Tag(Base):
+    """Tags/etiquetas para classificar mídias."""
+    __tablename__ = "tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True, index=True)
+    category = Column(String, nullable=True)  # "location", "event", "object", etc.
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relacionamentos
+    media_items = relationship("Media", secondary=media_tags, back_populates="tags")
+
+
+class ProcessingJob(Base):
+    """Rastreia jobs de processamento em background."""
+    __tablename__ = "processing_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_type = Column(String, nullable=False)  # "scan", "organize", "ai_process", "face_detect"
+    status = Column(String, default="pending")  # "pending", "running", "completed", "failed"
+    total_items = Column(Integer, default=0)
+    processed_items = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

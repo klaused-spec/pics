@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.env
+*.db
+*.egg-info/
+dist/
+build/
+
+# Modelos ONNX (baixados via script download-models.sh)
+backend/models/*.onnx
+
+# Libs instaladas localmente (não usadas no código)
+backend/libs/
+
+# Logs
+backend/logs/*.log
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dados locais
+*.thumb.jpg
+FOTOS/
