@@ -147,7 +147,7 @@ def get_image_dimensions(filepath: str) -> tuple[Optional[int], Optional[int]]:
 
 
 def get_video_metadata(filepath: str) -> dict:
-    """Extrai metadados de vídeo usando ffprobe (duração, dimensões)."""
+    """Extrai metadados de vídeo usando ffprobe (duração, dimensões, codec)."""
     import subprocess, json
     try:
         result = subprocess.run(
@@ -158,6 +158,7 @@ def get_video_metadata(filepath: str) -> dict:
         data = json.loads(result.stdout)
         duration = None
         width, height = None, None
+        codec = None
 
         if "format" in data and "duration" in data["format"]:
             duration = float(data["format"]["duration"])
@@ -166,14 +167,15 @@ def get_video_metadata(filepath: str) -> dict:
             if stream.get("codec_type") == "video":
                 width = stream.get("width")
                 height = stream.get("height")
+                codec = stream.get("codec_name")
                 if not duration and "duration" in stream:
                     duration = float(stream["duration"])
                 break
 
-        return {"duration": duration, "width": width, "height": height}
+        return {"duration": duration, "width": width, "height": height, "codec": codec}
     except Exception as e:
         logger.debug(f"Erro ao ler metadados de vídeo {filepath}: {e}")
-        return {"duration": None, "width": None, "height": None}
+        return {"duration": None, "width": None, "height": None, "codec": None}
 
 
 def generate_video_thumbnail(video_path: str, output_path: str) -> bool:

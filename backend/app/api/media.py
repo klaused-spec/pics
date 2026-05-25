@@ -237,7 +237,7 @@ def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Sess
 
 @router.get("/{media_id}/stream")
 def stream_video(media_id: int, db: Session = Depends(get_db)):
-    """Streaming de vídeo com suporte a range requests."""
+    """Streaming de vídeo. Transcodifica sob demanda se codec incompatível."""
     media = db.query(Media).get(media_id)
     if not media or media.media_type != "video":
         raise HTTPException(status_code=404, detail="Vídeo não encontrado")
@@ -246,8 +246,14 @@ def stream_video(media_id: int, db: Session = Depends(get_db)):
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
-    mime_type, _ = mimetypes.guess_type(filepath)
-    return FileResponse(filepath, media_type=mime_type or "video/mp4")
+    from app.services.transcoder import get_playable_path
+    try:
+        playable = get_playable_path(media)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Erro na transcodificação: {e}")
+
+    mime_type = "video/mp4" if playable.endswith(".mp4") else (mimetypes.guess_type(playable)[0] or "video/mp4")
+    return FileResponse(playable, media_type=mime_type)
 
 
 def _media_to_dict(media: Media, include_details: bool = False) -> dict:

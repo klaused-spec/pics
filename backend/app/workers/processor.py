@@ -270,12 +270,19 @@ def run_sync() -> dict:
 
                         from app.services.organizer import get_image_dimensions, get_video_metadata
                         width, height, duration = None, None, None
+                        video_codec = None
+                        needs_transcode = False
                         if media_type == "image":
                             width, height = get_image_dimensions(filepath)
                         elif media_type == "video":
                             meta = get_video_metadata(filepath)
                             width, height = meta.get("width"), meta.get("height")
                             duration = meta.get("duration")
+                            video_codec = meta.get("codec")
+                            # Codecs suportados nativamente pelos browsers
+                            web_codecs = {"h264", "hevc", "vp8", "vp9", "av1"}
+                            if video_codec and video_codec not in web_codecs:
+                                needs_transcode = True
 
                         media = Media(
                             original_path=filepath,
@@ -288,6 +295,8 @@ def run_sync() -> dict:
                             width=width,
                             height=height,
                             duration_seconds=duration,
+                            video_codec=video_codec,
+                            needs_transcode=needs_transcode,
                             is_organized=True,
                         )
                         db.add(media)
