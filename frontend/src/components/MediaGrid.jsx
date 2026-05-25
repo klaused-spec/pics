@@ -59,6 +59,13 @@ function MediaGrid({ items, onSelect, selected }) {
             </div>
           )}
 
+          {/* Badge de transcodificação pendente */}
+          {item.needs_transcode && !item.is_transcoded && (
+            <div className="absolute bottom-2 right-2 bg-yellow-600/90 rounded px-1.5 py-0.5">
+              <p className="text-xs text-white font-medium">Converter</p>
+            </div>
+          )}
+
           {/* Badge de localização IA */}
           {item.ai_location && item.ai_location !== 'desconhecido' && (
             <div className="absolute top-2 left-2 bg-blue-600/80 rounded px-1.5 py-0.5">

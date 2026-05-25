@@ -243,7 +243,7 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
     existing = db.query(Media).filter(Media.sha256_hash == file_hash).first()
     if existing:
         logger.info(f"Duplicata detectada: {filepath} == {existing.organized_path}")
-        # Registra como duplicata
+        # Registra como duplicata e remove do source
         media = Media(
             original_path=filepath,
             filename=Path(filepath).name,
@@ -255,6 +255,9 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
         )
         db.add(media)
         db.commit()
+        # Remove arquivo duplicado do source
+        os.remove(filepath)
+        logger.info(f"Removido duplicata do source: {filepath}")
         return media
 
     # Determina destino
@@ -263,8 +266,8 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
     # Cria diretórios se necessário
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
-    # Copia arquivo (mantém original no OneDrive)
-    shutil.copy2(filepath, dest_path)
+    # Move arquivo do source para organizado
+    shutil.move(filepath, dest_path)
 
     # Obtém dimensões e metadados
     width, height = None, None
@@ -282,7 +285,7 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
         generate_video_thumbnail(dest_path, thumb_path)
 
     # Cria registro no banco
-    media_date = get_media_date(filepath)
+    media_date = get_media_date(dest_path)
     media = Media(
         original_path=filepath,
         organized_path=dest_path,
@@ -290,7 +293,7 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
         media_type=media_type,
         sha256_hash=file_hash,
         date_taken=media_date,
-        date_file=datetime.fromtimestamp(os.path.getmtime(filepath)),
+        date_file=datetime.fromtimestamp(os.path.getmtime(dest_path)),
         width=width,
         height=height,
         duration_seconds=duration,

@@ -246,7 +246,33 @@ def stream_video(media_id: int, db: Session = Depends(get_db)):
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
-    from app.services.transcoder import get_playable_path
+    from app.services.transcoder import get_playable_path, is_transcoded, get_transcoded_path
+    import threading
+
+    if media.needs_transcode and not is_transcoded(filepath):
+        # Iniciar transcodificação em background se não estiver rodando
+        transcoded_path = get_transcoded_path(filepath)
+        lock_file = transcoded_path + ".lock"
+        if not os.path.exists(lock_file):
+            # Marcar como em progresso
+            with open(lock_file, "w") as f:
+                f.write("transcoding")
+
+            def _transcode():
+                try:
+                    get_playable_path(media)
+                finally:
+                    if os.path.exists(lock_file):
+                        os.remove(lock_file)
+
+            threading.Thread(target=_transcode, daemon=True).start()
+
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=202,
+            content={"status": "transcoding", "message": "Vídeo sendo convertido, tente novamente em instantes."}
+        )
+
     try:
         playable = get_playable_path(media)
     except RuntimeError as e:
@@ -275,6 +301,11 @@ def _media_to_dict(media: Media, include_details: bool = False) -> dict:
     if media.media_type == "video":
         result["stream_url"] = f"/api/media/{media.id}/stream"
         result["duration_seconds"] = media.duration_seconds
+        result["needs_transcode"] = media.needs_transcode or False
+        if media.needs_transcode:
+            from app.services.transcoder import is_transcoded
+            filepath = media.organized_path or media.original_path
+            result["is_transcoded"] = is_transcoded(filepath)
 
     if include_details:
         result["organized_path"] = media.organized_path

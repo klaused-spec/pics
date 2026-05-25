@@ -287,6 +287,18 @@ function MediaDetail() {
                 </div>
               )}
             </div>
+          ) : media.needs_transcode && !media.is_transcoded ? (
+            <div className="flex flex-col items-center justify-center gap-3">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-yellow-400"></div>
+              <p className="text-yellow-400 font-medium">Convertendo vídeo para formato web...</p>
+              <p className="text-sm text-gray-400">Isso acontece apenas na primeira vez</p>
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >
+                Verificar novamente
+              </button>
+            </div>
           ) : (
             <video
               src={getStreamUrl(media.id)}
