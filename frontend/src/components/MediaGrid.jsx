@@ -1,6 +1,7 @@
 import { getThumbnailUrl } from '../api'
+import { Check } from 'lucide-react'
 
-function MediaGrid({ items, onSelect, onSlideshow }) {
+function MediaGrid({ items, onSelect, selected }) {
   if (!items || items.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
@@ -11,10 +12,14 @@ function MediaGrid({ items, onSelect, onSlideshow }) {
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 p-4">
-      {items.map((item) => (
+      {items.map((item) => {
+        const isSelected = selected && selected.has(item.id)
+        return (
         <div
           key={item.id}
-          className="relative group cursor-pointer aspect-square overflow-hidden rounded-lg bg-gray-800"
+          className={`relative group cursor-pointer aspect-square overflow-hidden rounded-lg bg-gray-800 ${
+            isSelected ? 'ring-2 ring-blue-500' : ''
+          }`}
           onClick={() => onSelect?.(item)}
         >
           <img
@@ -23,6 +28,15 @@ function MediaGrid({ items, onSelect, onSlideshow }) {
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             loading="lazy"
           />
+
+          {/* Checkbox de seleção */}
+          {selected && (
+            <div className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+              isSelected ? 'bg-blue-500 border-blue-500' : 'border-white/70 bg-black/30'
+            }`}>
+              {isSelected && <Check size={12} className="text-white" />}
+            </div>
+          )}
 
           {/* Overlay com informações */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
@@ -52,7 +66,8 @@ function MediaGrid({ items, onSelect, onSlideshow }) {
             </div>
           )}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

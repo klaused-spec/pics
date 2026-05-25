@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { getMedia, searchMedia, getFileUrl, getStreamUrl } from '../api'
+import { getMedia, searchMedia, getAlbumMedia, getFileUrl, getStreamUrl } from '../api'
 import { ChevronLeft, ChevronRight, X, Pause, Play } from 'lucide-react'
 
 function Slideshow() {
@@ -42,8 +42,13 @@ function Slideshow() {
       const year = searchParams.get('year')
       const month = searchParams.get('month')
       const q = searchParams.get('q')
+      const albumId = searchParams.get('album_id')
 
-      if (ids) {
+      if (albumId) {
+        // Slideshow de um álbum
+        const res = await getAlbumMedia(albumId, { per_page: 200 })
+        setItems(res.data.items)
+      } else if (ids) {
         // IDs específicos (de busca ou pessoa)
         const idList = ids.split(',').map(Number)
         // Carrega em batches (a API não suporta IDs diretamente, então carregamos por listagem)

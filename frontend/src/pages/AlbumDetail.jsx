@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getAlbumMedia, updateAlbum, deleteAlbum, removeMediaFromAlbum, getThumbnailUrl } from '../api'
 import MediaGrid from '../components/MediaGrid'
-import { ArrowLeft, Trash2, Edit2, X, Check } from 'lucide-react'
+import { ArrowLeft, Trash2, Edit2, X, Check, Play } from 'lucide-react'
 
 function AlbumDetail() {
   const { id } = useParams()
@@ -128,6 +128,12 @@ function AlbumDetail() {
             </>
           ) : (
             <>
+              <button
+                onClick={() => window.open(`/slideshow?album_id=${id}`, '_blank')}
+                className="flex items-center gap-1 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
+              >
+                <Play size={14} /> Slideshow
+              </button>
               <button
                 onClick={() => setSelectMode(true)}
                 className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"

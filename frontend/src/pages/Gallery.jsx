@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { getMedia, getTimeline, getAlbums, createAlbum, getThumbnailUrl } from '../api'
+import { getMedia, getTimeline, getAlbums, createAlbum, addMediaToAlbum, getThumbnailUrl } from '../api'
 import MediaGrid from '../components/MediaGrid'
-import { Play, Calendar, FolderPlus, Image } from 'lucide-react'
+import { Play, Calendar, FolderPlus, Image, CheckSquare } from 'lucide-react'
 
 function Gallery() {
   const [items, setItems] = useState([])
@@ -14,6 +14,9 @@ function Gallery() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [showNewAlbum, setShowNewAlbum] = useState(false)
   const [newAlbumName, setNewAlbumName] = useState('')
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState(new Set())
+  const [showAlbumPicker, setShowAlbumPicker] = useState(false)
   const navigate = useNavigate()
 
   const tab = searchParams.get('tab') || 'data'
@@ -79,7 +82,25 @@ function Gallery() {
   }
 
   function handleSelect(item) {
-    navigate(`/media/${item.id}`)
+    if (selectMode) {
+      const next = new Set(selected)
+      if (next.has(item.id)) {
+        next.delete(item.id)
+      } else {
+        next.add(item.id)
+      }
+      setSelected(next)
+    } else {
+      navigate(`/media/${item.id}`)
+    }
+  }
+
+  async function handleAddToAlbum(albumId) {
+    if (selected.size === 0) return
+    await addMediaToAlbum(albumId, [...selected])
+    setSelected(new Set())
+    setSelectMode(false)
+    setShowAlbumPicker(false)
   }
 
   function startSlideshow() {
@@ -206,13 +227,62 @@ function Gallery() {
                 </h2>
                 <p className="text-sm text-gray-400">{total} itens</p>
               </div>
-              <button
-                onClick={startSlideshow}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm transition-colors"
-              >
-                <Play size={16} />
-                Slideshow
-              </button>
+              <div className="flex items-center gap-2">
+                {selectMode ? (
+                  <>
+                    <span className="text-sm text-gray-400">{selected.size} selecionados</span>
+                    <div className="relative">
+                      <button
+                        onClick={async () => { const res = await getAlbums(); setAlbums(res.data); setShowAlbumPicker(!showAlbumPicker) }}
+                        disabled={selected.size === 0}
+                        className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm disabled:opacity-50"
+                      >
+                        Adicionar ao álbum
+                      </button>
+                      {showAlbumPicker && (
+                        <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded p-2 min-w-[160px] max-h-48 overflow-auto z-50">
+                          {albums.length === 0 ? (
+                            <p className="text-xs text-gray-500 p-1">Nenhum álbum criado.</p>
+                          ) : (
+                            albums.map((a) => (
+                              <button
+                                key={a.id}
+                                onClick={() => handleAddToAlbum(a.id)}
+                                className="block w-full text-left px-2 py-1 text-sm text-gray-300 hover:bg-gray-700 rounded"
+                              >
+                                {a.name} ({a.media_count})
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => { setSelectMode(false); setSelected(new Set()); setShowAlbumPicker(false) }}
+                      className="px-3 py-1 bg-gray-700 rounded text-sm"
+                    >
+                      Cancelar
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setSelectMode(true)}
+                      className="flex items-center gap-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors"
+                    >
+                      <CheckSquare size={16} />
+                      Selecionar
+                    </button>
+                    <button
+                      onClick={startSlideshow}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm transition-colors"
+                    >
+                      <Play size={16} />
+                      Slideshow
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Grid */}
@@ -222,7 +292,7 @@ function Gallery() {
               </div>
             ) : (
               <div className="flex-1 overflow-auto">
-                <MediaGrid items={items} onSelect={handleSelect} />
+                <MediaGrid items={items} onSelect={handleSelect} selected={selectMode ? selected : null} />
                 {total > 60 && (
                   <div className="flex justify-center gap-2 p-4">
                     <button
