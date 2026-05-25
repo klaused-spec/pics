@@ -4,6 +4,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Carregar nvm se disponível (necessário para npm em shells não-interativas)
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
 cleanup() {
     echo ""
     echo "Encerrando..."
