@@ -18,18 +18,19 @@ echo "[PICS] Iniciando backend na porta 8000..."
 cd "$SCRIPT_DIR/backend"
 source venv/bin/activate
 mkdir -p logs
-uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee logs/backend.log &
+uvicorn app.main:app --host 0.0.0.0 --port 8000 > logs/backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Aguardar backend ficar pronto
 echo "[PICS] Aguardando backend ficar pronto..."
-for i in $(seq 1 30); do
-    if curl -s http://localhost:8000/docs > /dev/null 2>&1; then
-        echo "[PICS] Backend pronto!"
+for i in $(seq 1 60); do
+    if curl -s http://localhost:8000/api/health > /dev/null 2>&1; then
+        echo "[PICS] Backend pronto! (${i}s)"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "[PICS] ERRO: Backend não respondeu após 30s"
+    if [ $i -eq 60 ]; then
+        echo "[PICS] ERRO: Backend não respondeu após 60s"
+        echo "[PICS] Verifique logs em backend/logs/backend.log"
         kill $BACKEND_PID 2>/dev/null
         exit 1
     fi
