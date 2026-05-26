@@ -50,5 +50,18 @@ export const removeMediaFromAlbum = (albumId, mediaIds) => api.delete(`/albums/$
 export const getThumbnailUrl = (id, size = 300) => `/api/media/${id}/thumbnail?size=${size}`
 export const getFileUrl = (id) => `/api/media/${id}/file`
 export const getStreamUrl = (id) => `/api/media/${id}/stream`
+export const forceTranscode = (id) => api.post(`/media/${id}/transcode`)
+export const getTranscodeStatus = (id) => api.get(`/media/${id}/transcode-status`)
+export const deleteOriginalVideo = (id) => api.delete(`/media/${id}/original`)
+
+// Settings
+export const getSettings = () => api.get('/settings/paths')
+export const updateSettings = (data) => api.put('/settings/paths', data)
+export const backupDatabase = () => api.get('/settings/backup', { responseType: 'blob' })
+export const restoreDatabase = (file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/settings/restore', form)
+}
 
 export default api

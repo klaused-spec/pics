@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api import media_router, persons_router, jobs_router, albums_router
+from app.api import media_router, persons_router, jobs_router, albums_router, settings_router
 from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync
 
 # Configuração de logging
@@ -91,6 +91,7 @@ app.include_router(media_router, prefix="/api")
 app.include_router(persons_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
+app.include_router(settings_router, prefix="/api")
 
 
 @app.get("/api/health")

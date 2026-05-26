@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import { getThumbnailUrl } from '../api'
 import { Check } from 'lucide-react'
 
@@ -7,18 +7,17 @@ function MediaGrid({ items, onSelect, selected }) {
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState(null)
   const [dragRect, setDragRect] = useState(null)
+  const dragDidMove = useRef(false)
   const itemRefs = useRef({})
 
   // Calcula quais itens estão dentro do retângulo de seleção
   const getItemsInRect = useCallback((rect) => {
     if (!rect || !gridRef.current) return []
-    const gridBounds = gridRef.current.getBoundingClientRect()
     const hits = []
 
     for (const [id, el] of Object.entries(itemRefs.current)) {
       if (!el) continue
       const r = el.getBoundingClientRect()
-      // Verifica interseção
       if (
         r.left < rect.x + rect.w &&
         r.right > rect.x &&
@@ -33,10 +32,11 @@ function MediaGrid({ items, onSelect, selected }) {
 
   function handleMouseDown(e) {
     if (!selected || e.button !== 0) return
-    // Ignora se clicou diretamente em um item (deixa o onClick normal funcionar)
-    if (e.target.closest('[data-media-item]')) return
+    // Ignora botões e inputs interativos
+    if (e.target.closest('button, input, a')) return
     e.preventDefault()
     setIsDragging(true)
+    dragDidMove.current = false
     setDragStart({ x: e.clientX, y: e.clientY })
     setDragRect(null)
   }
@@ -44,6 +44,11 @@ function MediaGrid({ items, onSelect, selected }) {
   function handleMouseMove(e) {
     if (!isDragging || !dragStart) return
     e.preventDefault()
+    const dx = Math.abs(e.clientX - dragStart.x)
+    const dy = Math.abs(e.clientY - dragStart.y)
+    // Só começa o arrasto visual após mover pelo menos 8px
+    if (dx < 8 && dy < 8) return
+    dragDidMove.current = true
     const rect = {
       x: Math.min(dragStart.x, e.clientX),
       y: Math.min(dragStart.y, e.clientY),
@@ -56,19 +61,44 @@ function MediaGrid({ items, onSelect, selected }) {
   function handleMouseUp(e) {
     if (!isDragging) return
     setIsDragging(false)
-    if (dragRect && dragRect.w > 10 && dragRect.h > 10) {
+
+    if (dragDidMove.current && dragRect && dragRect.w > 10 && dragRect.h > 10) {
+      // Arrasto: seleciona todos os itens na área
       const hitIds = getItemsInRect(dragRect)
-      // Seleciona todos os itens na área
       hitIds.forEach(id => {
         const item = items.find(i => i.id === id)
         if (item && !selected.has(id)) {
           onSelect?.(item)
         }
       })
+    } else if (!dragDidMove.current) {
+      // Clique simples: busca o item sob o cursor
+      const el = e.target.closest('[data-media-item]')
+      if (el) {
+        const id = parseInt(el.dataset.mediaId)
+        const item = items.find(i => i.id === id)
+        if (item) onSelect?.(item)
+      }
     }
+
     setDragStart(null)
     setDragRect(null)
+    dragDidMove.current = false
   }
+
+  // Cancela drag se o mouse sair da janela
+  useEffect(() => {
+    function handleGlobalUp() {
+      if (isDragging) {
+        setIsDragging(false)
+        setDragStart(null)
+        setDragRect(null)
+        dragDidMove.current = false
+      }
+    }
+    window.addEventListener('mouseup', handleGlobalUp)
+    return () => window.removeEventListener('mouseup', handleGlobalUp)
+  }, [isDragging])
 
   if (!items || items.length === 0) {
     return (
@@ -85,7 +115,6 @@ function MediaGrid({ items, onSelect, selected }) {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={() => { setIsDragging(false); setDragStart(null); setDragRect(null) }}
     >
       {/* Retângulo de seleção visual */}
       {isDragging && dragRect && dragRect.w > 5 && (
@@ -101,11 +130,16 @@ function MediaGrid({ items, onSelect, selected }) {
         <div
           key={item.id}
           data-media-item
+          data-media-id={item.id}
           ref={(el) => { itemRefs.current[item.id] = el }}
           className={`relative group cursor-pointer aspect-square overflow-hidden rounded-lg bg-gray-800 ${
             isSelected ? 'ring-2 ring-blue-500' : ''
           }`}
-          onClick={() => onSelect?.(item)}
+          onClick={(e) => {
+            // Em modo seleção, o handleMouseUp já cuida do clique
+            if (selected) return
+            onSelect?.(item)
+          }}
         >
           <img
             src={getThumbnailUrl(item.id)}

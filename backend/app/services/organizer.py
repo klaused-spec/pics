@@ -16,9 +16,28 @@ from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import Media
+from app.models import Media, Face, media_faces
 
 logger = logging.getLogger(__name__)
+
+
+def move_to_trash(filepath: str) -> str:
+    """Move arquivo para o trash ao invés de deletar. Retorna o novo caminho."""
+    trash_dir = settings.trash_dir
+    os.makedirs(trash_dir, exist_ok=True)
+    filename = Path(filepath).name
+    dest = os.path.join(trash_dir, filename)
+    # Se já existe no trash, adiciona sufixo
+    if os.path.exists(dest):
+        base = Path(filepath).stem
+        ext = Path(filepath).suffix
+        counter = 1
+        while os.path.exists(dest):
+            dest = os.path.join(trash_dir, f"{base}_{counter}{ext}")
+            counter += 1
+    shutil.move(filepath, dest)
+    logger.info(f"Movido para trash: {filepath} -> {dest}")
+    return dest
 
 # Padrão de nome de arquivo com data: 20260101_153500.jpg / IMG_20260101_153500.jpg
 DATE_PATTERNS = [
@@ -86,31 +105,47 @@ def get_media_date(filepath: str) -> datetime:
 
 
 def compute_sha256(filepath: str) -> str:
-    """Calcula hash SHA256 do arquivo."""
+    """Calcula hash SHA256 do arquivo. Para arquivos >100MB, usa hash parcial (primeiro+último 4MB + tamanho)."""
+    file_size = os.path.getsize(filepath)
     sha256 = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
+
+    if file_size > 100 * 1024 * 1024:  # >100MB: hash parcial para performance
+        chunk_size = 4 * 1024 * 1024  # 4MB
+        sha256.update(str(file_size).encode())  # Inclui tamanho no hash
+        with open(filepath, "rb") as f:
+            sha256.update(f.read(chunk_size))  # Primeiro 4MB
+            f.seek(max(0, file_size - chunk_size))
+            sha256.update(f.read(chunk_size))  # Último 4MB
+    else:
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+
     return sha256.hexdigest()
 
 
 def get_organized_path(filepath: str, organized_dir: str) -> str:
     """
-    Determina o caminho organizado baseado na data.
-    Estrutura: organized_dir/YYYY/MM - NomeMes/arquivo
+    Determina o caminho organizado baseado na data e padrão configurado.
+    Padrões:
+      - "year/month": organized_dir/YYYY/MM/arquivo
+      - "year_month": organized_dir/YYYY_MM/arquivo
     """
     media_date = get_media_date(filepath)
-    month_names = {
-        1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
-        5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
-        9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
-    }
+    pattern = settings.organization_pattern
 
-    year_dir = str(media_date.year)
-    month_dir = f"{media_date.month:02d} - {month_names[media_date.month]}"
+    if pattern == "year_month":
+        # Padrão flat: YYYY_MM/
+        subfolder = f"{media_date.year}_{media_date.month:02d}"
+        dest_dir = os.path.join(organized_dir, subfolder)
+    else:
+        # Padrão hierárquico (default): YYYY/MM/
+        year_dir = str(media_date.year)
+        month_dir = f"{media_date.month:02d}"
+        dest_dir = os.path.join(organized_dir, year_dir, month_dir)
 
     filename = Path(filepath).name
-    dest_path = os.path.join(organized_dir, year_dir, month_dir, filename)
+    dest_path = os.path.join(dest_dir, filename)
 
     # Se já existe um arquivo com o mesmo nome, adiciona sufixo
     if os.path.exists(dest_path):
@@ -118,10 +153,7 @@ def get_organized_path(filepath: str, organized_dir: str) -> str:
         ext = Path(filepath).suffix
         counter = 1
         while os.path.exists(dest_path):
-            dest_path = os.path.join(
-                organized_dir, year_dir, month_dir,
-                f"{base}_{counter}{ext}"
-            )
+            dest_path = os.path.join(dest_dir, f"{base}_{counter}{ext}")
             counter += 1
 
     return dest_path
@@ -204,6 +236,7 @@ def generate_video_thumbnail(video_path: str, output_path: str) -> bool:
 def scan_source_directory(db: Session) -> list[str]:
     """
     Escaneia o diretório de origem e retorna arquivos novos (não processados).
+    Também move arquivos que já foram processados mas ainda estão no source.
     """
     source_dir = settings.source_dir
     new_files = []
@@ -220,9 +253,27 @@ def scan_source_directory(db: Session) -> list[str]:
             if ext not in settings.all_extensions:
                 continue
 
-            # Verifica se já foi processado
+            # Verifica se já foi processado (por path)
             existing = db.query(Media).filter(Media.original_path == filepath).first()
             if existing:
+                # Confirma que é realmente o mesmo arquivo (hash)
+                file_hash = compute_sha256(filepath)
+                if file_hash != existing.sha256_hash:
+                    # Mesmo path mas conteúdo diferente = arquivo novo (ex: IMG001.jpg de outra câmera)
+                    logger.info(f"Arquivo novo no mesmo path (hash diferente): {filepath}")
+                    new_files.append(filepath)
+                    continue
+
+                # Já está no banco — se já tem organized_path diferente, o arquivo no source é sobra
+                if existing.organized_path and existing.organized_path != filepath and os.path.exists(existing.organized_path):
+                    # O organizado já existe, mover sobra para trash
+                    move_to_trash(filepath)
+                elif existing.organized_path and existing.organized_path != filepath and not os.path.exists(existing.organized_path):
+                    # O organizado sumiu, mover de novo
+                    new_files.append(filepath)
+                else:
+                    # original_path == organized_path == filepath (nunca foi movido)
+                    new_files.append(filepath)
                 continue
 
             new_files.append(filepath)
@@ -239,9 +290,49 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
     # Calcula hash
     file_hash = compute_sha256(filepath)
 
+    # Verifica se este arquivo já está no banco (por path E hash)
+    existing_self = db.query(Media).filter(
+        Media.original_path == filepath,
+        Media.sha256_hash == file_hash
+    ).first()
+    if existing_self:
+        if existing_self.organized_path == filepath:
+            # Nunca foi movido — mover agora
+            dest_path = get_organized_path(filepath, settings.organized_dir)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.move(filepath, dest_path)
+            existing_self.organized_path = dest_path
+            existing_self.is_organized = True
+            db.commit()
+            logger.info(f"Movido (re-org): {filepath} -> {dest_path}")
+            return existing_self
+        elif existing_self.organized_path and not os.path.exists(existing_self.organized_path):
+            # O organized foi deletado — re-mover do source
+            dest_path = get_organized_path(filepath, settings.organized_dir)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.move(filepath, dest_path)
+            existing_self.organized_path = dest_path
+            existing_self.is_organized = True
+            db.commit()
+            logger.info(f"Re-movido (org deletado): {filepath} -> {dest_path}")
+            return existing_self
+
     # Verifica duplicata por hash
     existing = db.query(Media).filter(Media.sha256_hash == file_hash).first()
     if existing:
+        # Se o arquivo organizado do registro existente NÃO existe mais no disco,
+        # isso é um re-org (usuário deletou organized e colocou de volta no source)
+        if existing.organized_path and not os.path.exists(existing.organized_path):
+            dest_path = get_organized_path(filepath, settings.organized_dir)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.move(filepath, dest_path)
+            existing.organized_path = dest_path
+            existing.original_path = filepath
+            existing.is_organized = True
+            db.commit()
+            logger.info(f"Re-organizado (hash match, org deletado): {filepath} -> {dest_path}")
+            return existing
+
         logger.info(f"Duplicata detectada: {filepath} == {existing.organized_path}")
         # Registra como duplicata e remove do source
         media = Media(
@@ -255,9 +346,8 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
         )
         db.add(media)
         db.commit()
-        # Remove arquivo duplicado do source
-        os.remove(filepath)
-        logger.info(f"Removido duplicata do source: {filepath}")
+        # Move arquivo duplicado para trash (nunca deletar)
+        move_to_trash(filepath)
         return media
 
     # Determina destino
@@ -302,6 +392,28 @@ def organize_file(filepath: str, db: Session) -> Optional[Media]:
     db.add(media)
     db.commit()
     db.refresh(media)
+
+    # Re-linkar faces órfãs que pertencem a este conteúdo (por sha256)
+    orphan_faces = db.query(Face).filter(Face.media_sha256 == file_hash).all()
+    for face in orphan_faces:
+        if media not in face.media_items:
+            face.media_items.append(media)
+    if orphan_faces:
+        db.commit()
+        logger.info(f"Re-linkadas {len(orphan_faces)} faces ao media {filepath}")
+
+    # Restaurar dados de IA do cache (AiCache)
+    from app.models import AiCache
+    cached_ai = db.query(AiCache).filter(AiCache.sha256_hash == file_hash).first()
+    if cached_ai:
+        media.ai_description = cached_ai.ai_description
+        media.ai_location = cached_ai.ai_location
+        media.ai_scene_type = cached_ai.ai_scene_type
+        media.ai_objects = cached_ai.ai_objects
+        media.ai_processed = True
+        media.ai_processed_at = cached_ai.processed_at
+        db.commit()
+        logger.info(f"Restaurado cache AI para {filepath}")
 
     logger.info(f"Organizado: {filepath} -> {dest_path}")
     return media

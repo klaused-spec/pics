@@ -9,6 +9,7 @@ import PersonDetail from './pages/PersonDetail'
 import FaceReview from './pages/FaceReview'
 import Slideshow from './pages/Slideshow'
 import Dashboard from './pages/Dashboard'
+import Settings from './pages/Settings'
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
         <Route path="persons" element={<Persons />} />
         <Route path="persons/review" element={<FaceReview />} />
         <Route path="persons/:id" element={<PersonDetail />} />
+        <Route path="settings" element={<Settings />} />
         <Route path="dashboard" element={<Dashboard />} />
       </Route>
       <Route path="/slideshow" element={<Slideshow />} />

@@ -311,6 +311,7 @@ def process_faces_in_media(media: Media, db: Session) -> list[Face]:
             bbox_width=face_data["bbox_width"],
             bbox_height=face_data["bbox_height"],
             encoding=encoding_bytes,
+            media_sha256=media.sha256_hash,
         )
 
         # Tenta sugerir pessoa (apenas com base em rostos confirmados)

@@ -46,12 +46,12 @@ function Search() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar fotos... (ex: praia, aniversário, família no parque)"
+              placeholder="Buscar por nome, extensão, data ou descrição..."
               className="w-full pl-12 pr-4 py-3 bg-gray-800 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <p className="mt-2 text-xs text-gray-500 text-center">
-            Busca por descrição IA, localização e tags. Ex: "passeio na praia", "aniversário", "paisagem com montanha"
+            Ex: "mp4", "IMG_2031", "2013", "julho", "2014-02", "25/12/2013", "praia", "aniversário"
           </p>
         </form>
       </div>

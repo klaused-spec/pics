@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getMediaById, getMediaNeighbors, getFileUrl, getStreamUrl, assignFace, unassignFace, confirmFace, ignoreFace, getPersons, createPerson, createManualFace, getAlbums, addMediaToAlbum } from '../api'
+import { getMediaById, getMediaNeighbors, getFileUrl, getStreamUrl, assignFace, unassignFace, confirmFace, ignoreFace, getPersons, createPerson, createManualFace, getAlbums, addMediaToAlbum, forceTranscode, getTranscodeStatus, deleteOriginalVideo } from '../api'
 import { ArrowLeft, ChevronLeft, ChevronRight, MapPin, Tag, User, Calendar, Camera, FolderPlus } from 'lucide-react'
 
 const FACE_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
@@ -175,11 +175,11 @@ function MediaDetail() {
       <div className="flex-1 flex flex-col bg-black">
         <div className="p-3">
           <button
-            onClick={() => navigate(-1)}
+            onClick={() => navigate('/gallery')}
             className="flex items-center gap-2 text-gray-400 hover:text-white text-sm"
           >
             <ArrowLeft size={16} />
-            Voltar
+            Galeria
           </button>
         </div>
 
@@ -287,25 +287,49 @@ function MediaDetail() {
                 </div>
               )}
             </div>
-          ) : media.needs_transcode && !media.is_transcoded ? (
-            <div className="flex flex-col items-center justify-center gap-3">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-yellow-400"></div>
-              <p className="text-yellow-400 font-medium">Convertendo vídeo para formato web...</p>
-              <p className="text-sm text-gray-400">Isso acontece apenas na primeira vez</p>
-              <button
-                onClick={() => window.location.reload()}
-                className="mt-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-              >
-                Verificar novamente
-              </button>
-            </div>
+          ) : media.needs_transcode && media.is_transcoded === false && media.transcode_status === 'transcoding' ? (
+            <TranscodeProgress mediaId={media.id} onDone={loadMedia} />
           ) : (
-            <video
-              src={getStreamUrl(media.id)}
-              controls
-              className="max-w-full max-h-full"
-              autoPlay
-            />
+            <div className="relative flex flex-col items-center">
+              <video
+                src={getStreamUrl(media.id)}
+                controls
+                className="max-w-full max-h-[calc(100vh-160px)]"
+                autoPlay
+              />
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={async () => {
+                    try {
+                      await forceTranscode(media.id)
+                      loadMedia()
+                    } catch (err) {
+                      console.error(err)
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-yellow-700 hover:bg-yellow-600 rounded text-sm text-white"
+                >
+                  ⚠️ Não toca? Converter
+                </button>
+                {media.is_transcoded && (
+                  <button
+                    onClick={async () => {
+                      if (!confirm('Apagar vídeo original? (mantém apenas a versão convertida)')) return
+                      try {
+                        const res = await deleteOriginalVideo(media.id)
+                        alert(res.data.message)
+                        loadMedia()
+                      } catch (err) {
+                        alert('Erro: ' + (err.response?.data?.detail || err.message))
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-red-700 hover:bg-red-600 rounded text-sm text-white"
+                  >
+                    🗑️ Apagar original
+                  </button>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Toggle de face boxes */}
@@ -556,6 +580,65 @@ function MediaDetail() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// Componente de progresso de transcodificação com polling
+function TranscodeProgress({ mediaId, onDone }) {
+  const [progress, setProgress] = useState(0)
+  const [status, setStatus] = useState('transcoding')
+  const triggered = useRef(false)
+
+  useEffect(() => {
+    let active = true
+    const poll = async () => {
+      try {
+        const res = await getTranscodeStatus(mediaId)
+        if (!active) return
+        setProgress(res.data.progress)
+        setStatus(res.data.status)
+
+        if (res.data.status === 'done') {
+          onDone?.()
+        } else if (res.data.status === 'error') {
+          // parar de pollar
+        } else {
+          setTimeout(poll, 2000)
+        }
+      } catch {
+        if (active) setTimeout(poll, 5000)
+      }
+    }
+    poll()
+    return () => { active = false }
+  }, [mediaId])
+
+  return (
+    <div className="flex flex-col items-center justify-center gap-3">
+      {status === 'error' ? (
+        <>
+          <p className="text-red-400 font-medium">Erro na conversão</p>
+          <button onClick={onDone} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">
+            Voltar
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="relative w-48 h-48 flex items-center justify-center">
+            <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="45" fill="none" stroke="#374151" strokeWidth="8" />
+              <circle cx="50" cy="50" r="45" fill="none" stroke="#facc15" strokeWidth="8"
+                strokeDasharray={`${progress * 2.83} 283`} strokeLinecap="round"
+                className="transition-all duration-1000"
+              />
+            </svg>
+            <span className="absolute text-2xl font-bold text-yellow-400">{progress}%</span>
+          </div>
+          <p className="text-yellow-400 font-medium">Convertendo vídeo...</p>
+          <p className="text-sm text-gray-400">Isso acontece apenas na primeira vez</p>
+        </>
+      )}
     </div>
   )
 }

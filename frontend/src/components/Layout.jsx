@@ -7,6 +7,7 @@ function Layout() {
     { to: '/gallery', icon: Image, label: 'Galeria' },
     { to: '/search', icon: Search, label: 'Busca' },
     { to: '/persons', icon: Users, label: 'Pessoas' },
+    { to: '/settings', icon: Settings, label: 'Config' },
   ]
 
   return (

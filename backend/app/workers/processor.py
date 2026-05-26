@@ -215,7 +215,12 @@ def run_sync() -> dict:
         for media in all_media:
             if media.organized_path and not os.path.exists(media.organized_path):
                 # Arquivo sumiu do path original - tenta encontrar pelo nome
-                found_path = _find_file_by_name(media.filename, settings.organized_dir)
+                all_library_dirs = [settings.organized_dir] + settings.library_folders
+                found_path = None
+                for lib_dir in all_library_dirs:
+                    found_path = _find_file_by_name(media.filename, lib_dir)
+                    if found_path:
+                        break
                 if found_path:
                     # Moveu de pasta - atualiza path
                     media.organized_path = found_path
@@ -229,14 +234,19 @@ def run_sync() -> dict:
 
         db.commit()
 
-        # 2. Busca arquivos novos na pasta organizada (não estão no banco)
-        organized_dir = settings.organized_dir
-        if os.path.exists(organized_dir):
+        # 2. Busca arquivos novos nas pastas organizadas (não estão no banco)
+        all_library_dirs = [settings.organized_dir] + settings.library_folders
+        for organized_dir in all_library_dirs:
+            if not os.path.exists(organized_dir):
+                continue
             for root, _dirs, files in os.walk(organized_dir):
                 # Ignora pasta de thumbnails
                 if '.thumbnails' in root:
                     continue
                 for filename in files:
+                    # Ignora arquivos de transcodificação auxiliares
+                    if '_transcoded' in filename or filename.endswith(('.lock', '.progress')):
+                        continue
                     filepath = os.path.join(root, filename)
                     ext = Path(filepath).suffix.lower()
                     if ext not in settings.all_extensions:

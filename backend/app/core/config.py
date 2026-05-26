@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from pathlib import Path
 
 
@@ -10,8 +11,22 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-08-01-preview"
 
     # Diretórios
-    source_dir: str = "/mnt/hd4tb/OneDrive/Pictures/Camera Roll"
-    organized_dir: str = "/mnt/hd4tb/Fotos"
+    source_dir: str = "/home/kkirner/src/pics/FOTOS/source"
+    organized_dir: str = "/home/kkirner/src/pics/FOTOS/organized"
+    trash_dir: str = "/home/kkirner/src/pics/FOTOS/trash"
+
+    # Organização
+    # Padrão: "year/month" = YYYY/MM/  |  "year_month" = YYYY_MM[_descricao]/
+    organization_pattern: str = "year/month"
+    # Pastas de biblioteca adicionais (além de organized_dir) - separadas por vírgula no .env
+    library_folders: list[str] = []
+
+    @field_validator("library_folders", mode="before")
+    @classmethod
+    def parse_library_folders(cls, v):
+        if isinstance(v, str):
+            return [f.strip() for f in v.split(",") if f.strip()]
+        return v
 
     # Banco de dados
     database_url: str = "sqlite:///./pics.db"

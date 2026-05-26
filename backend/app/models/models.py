@@ -110,13 +110,16 @@ class Face(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    # Hash do conteúdo da mídia onde o rosto foi detectado (para re-link automático)
+    media_sha256 = Column(String(64), nullable=True, index=True)
+
     # Posição do rosto na imagem (bounding box)
     bbox_x = Column(Integer, nullable=True)
     bbox_y = Column(Integer, nullable=True)
     bbox_width = Column(Integer, nullable=True)
     bbox_height = Column(Integer, nullable=True)
 
-    # Encoding do rosto (128-dimensional face encoding)
+    # Encoding do rosto (512-dimensional ArcFace embedding)
     encoding = Column(LargeBinary, nullable=True)
 
     # Pessoa associada
@@ -174,3 +177,16 @@ class ProcessingJob(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class AiCache(Base):
+    """Cache de descrições IA por hash do conteúdo. Sobrevive a reset de Media."""
+    __tablename__ = "ai_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sha256_hash = Column(String(64), nullable=False, unique=True, index=True)
+    ai_description = Column(Text, nullable=True)
+    ai_location = Column(String, nullable=True)
+    ai_scene_type = Column(String, nullable=True)
+    ai_objects = Column(JSON, nullable=True)
+    processed_at = Column(DateTime, default=datetime.datetime.utcnow)

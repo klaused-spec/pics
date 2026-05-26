@@ -6,8 +6,8 @@ import mimetypes
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -235,9 +235,120 @@ def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Sess
         raise HTTPException(status_code=404, detail="Thumbnail não disponível para este vídeo")
 
 
+@router.get("/{media_id}/transcode-status")
+def transcode_status(media_id: int, db: Session = Depends(get_db)):
+    """Retorna progresso da transcodificação de um vídeo."""
+    media = db.query(Media).get(media_id)
+    if not media or media.media_type != "video":
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath:
+        return {"status": "idle", "progress": 0}
+
+    from app.services.transcoder import get_transcode_progress
+    return get_transcode_progress(filepath)
+
+
+@router.post("/{media_id}/transcode")
+def force_transcode(media_id: int, db: Session = Depends(get_db)):
+    """Força transcodificação de um vídeo que não toca no browser."""
+    media = db.query(Media).get(media_id)
+    if not media or media.media_type != "video":
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    from app.services.transcoder import get_transcoded_path, is_transcoded, transcode_video
+    import threading
+
+    if is_transcoded(filepath):
+        return {"status": "already_transcoded", "message": "Já existe versão convertida."}
+
+    # Marca no banco
+    media.needs_transcode = True
+    db.commit()
+
+    # Inicia transcodificação em background
+    transcoded_path = get_transcoded_path(filepath)
+    lock_file = transcoded_path + ".lock"
+    if not os.path.exists(lock_file):
+        with open(lock_file, "w") as f:
+            f.write("transcoding")
+
+        def _transcode():
+            try:
+                transcode_video(filepath)
+            finally:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+
+        threading.Thread(target=_transcode, daemon=True).start()
+
+    return {"status": "transcoding", "message": "Conversão iniciada. Tente novamente em instantes."}
+
+
+@router.delete("/{media_id}/original")
+def delete_original_video(media_id: int, db: Session = Depends(get_db)):
+    """Move o vídeo original para FOTOS/trash após transcodificação."""
+    media = db.query(Media).get(media_id)
+    if not media or media.media_type != "video":
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Caminho não encontrado")
+
+    from app.services.transcoder import get_transcoded_path, is_transcoded
+    import shutil
+
+    if not is_transcoded(filepath):
+        raise HTTPException(status_code=400, detail="Vídeo ainda não foi transcodificado")
+
+    transcoded_path = get_transcoded_path(filepath)
+    original_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+    transcoded_size = os.path.getsize(transcoded_path)
+
+    # Mover original para FOTOS/trash
+    trash_dir = os.path.join(settings.source_dir, "..", "trash")
+    os.makedirs(trash_dir, exist_ok=True)
+    trash_path = os.path.join(trash_dir, Path(filepath).name)
+    # Evitar conflito de nomes
+    if os.path.exists(trash_path):
+        stem = Path(filepath).stem
+        ext = Path(filepath).suffix
+        i = 1
+        while os.path.exists(trash_path):
+            trash_path = os.path.join(trash_dir, f"{stem}_{i}{ext}")
+            i += 1
+
+    if os.path.exists(filepath):
+        shutil.move(filepath, trash_path)
+
+    # Atualizar banco para apontar para o transcoded
+    if media.organized_path:
+        media.organized_path = transcoded_path
+    else:
+        media.original_path = transcoded_path
+    media.filename = Path(transcoded_path).name
+    media.needs_transcode = False
+    media.video_codec = "h264"
+    db.commit()
+
+    saved_mb = (original_size - transcoded_size) / 1024 / 1024
+    return {
+        "status": "moved_to_trash",
+        "trash_path": trash_path,
+        "saved_bytes": original_size - transcoded_size,
+        "message": f"Original movido para trash. Economizou {saved_mb:.1f} MB.",
+    }
+
+
 @router.get("/{media_id}/stream")
-def stream_video(media_id: int, db: Session = Depends(get_db)):
-    """Streaming de vídeo. Transcodifica sob demanda se codec incompatível."""
+def stream_video(media_id: int, request: Request, db: Session = Depends(get_db)):
+    """Streaming de vídeo com suporte a Range requests."""
     media = db.query(Media).get(media_id)
     if not media or media.media_type != "video":
         raise HTTPException(status_code=404, detail="Vídeo não encontrado")
@@ -246,15 +357,14 @@ def stream_video(media_id: int, db: Session = Depends(get_db)):
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
-    from app.services.transcoder import get_playable_path, is_transcoded, get_transcoded_path
+    from app.services.transcoder import get_playable_path, is_transcoded, get_transcoded_path, needs_transcode_check
     import threading
 
-    if media.needs_transcode and not is_transcoded(filepath):
+    if needs_transcode_check(media) and not is_transcoded(filepath):
         # Iniciar transcodificação em background se não estiver rodando
         transcoded_path = get_transcoded_path(filepath)
         lock_file = transcoded_path + ".lock"
         if not os.path.exists(lock_file):
-            # Marcar como em progresso
             with open(lock_file, "w") as f:
                 f.write("transcoding")
 
@@ -278,8 +388,57 @@ def stream_video(media_id: int, db: Session = Depends(get_db)):
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=f"Erro na transcodificação: {e}")
 
+    file_size = os.path.getsize(playable)
     mime_type = "video/mp4" if playable.endswith(".mp4") else (mimetypes.guess_type(playable)[0] or "video/mp4")
-    return FileResponse(playable, media_type=mime_type)
+
+    # Suporte a Range requests para seek e playback correto
+    range_header = request.headers.get("range")
+    if range_header:
+        # Parsear Range: bytes=start-end
+        range_spec = range_header.replace("bytes=", "")
+        parts = range_spec.split("-")
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        def iter_file():
+            with open(playable, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(1024 * 1024, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type=mime_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            },
+        )
+
+    # Sem Range: retorna o arquivo completo com Accept-Ranges
+    def iter_full():
+        with open(playable, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        iter_full(),
+        media_type=mime_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+        },
+    )
 
 
 def _media_to_dict(media: Media, include_details: bool = False) -> dict:
@@ -299,13 +458,18 @@ def _media_to_dict(media: Media, include_details: bool = False) -> dict:
     }
 
     if media.media_type == "video":
+        from app.services.transcoder import is_transcoded, needs_transcode_check, get_transcoded_path
+        from pathlib import Path as _Path
+        filepath = media.organized_path or media.original_path
         result["stream_url"] = f"/api/media/{media.id}/stream"
         result["duration_seconds"] = media.duration_seconds
-        result["needs_transcode"] = media.needs_transcode or False
-        if media.needs_transcode:
-            from app.services.transcoder import is_transcoded
-            filepath = media.organized_path or media.original_path
-            result["is_transcoded"] = is_transcoded(filepath)
+        result["needs_transcode"] = needs_transcode_check(media)
+        if result["needs_transcode"]:
+            transcoded = is_transcoded(filepath)
+            result["is_transcoded"] = transcoded
+            # Mostrar nome do transcoded quando existe
+            if transcoded:
+                result["filename"] = _Path(get_transcoded_path(filepath)).name
 
     if include_details:
         result["organized_path"] = media.organized_path

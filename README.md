@@ -5,13 +5,15 @@ Sistema organizador de fotos e vídeos pessoais com reconhecimento facial, de lo
 ## Funcionalidades
 
 - **Organização automática**: Importa fotos/vídeos e organiza por ano/mês
+- **Padrão de pastas configurável**: Hierárquico (`YYYY/MM/`) ou flat (`YYYY_MM/`)
+- **Múltiplas pastas de biblioteca**: Indexa várias pastas de destino simultaneamente
 - **Detecção de duplicatas**: SHA256 por conteúdo (não por nome — suporta câmeras diferentes)
 - **Reconhecimento facial**: Detecta e agrupa rostos com ArcFace + MediaPipe
 - **Descrição de cenas**: Azure OpenAI Vision descreve conteúdo, locais e contexto
 - **Busca inteligente**: Busca por texto livre, data, extensão, nome
 - **Interface web**: Galeria, player de vídeo, slideshow, drag-select
 - **Backup/Restore**: ZIP com banco completo (faces, AI, albums) — portátil entre PCs
-- **Configurações via UI**: Paths de source/organized/trash configuráveis
+- **Configurações via UI**: Paths, padrão de organização e pastas extras configuráveis
 - **Nunca deleta**: Arquivos só são movidos (source → organized → trash)
 
 ## Setup Rápido (novo PC com WSL)
@@ -46,6 +48,8 @@ cat > ../backend/.env << 'EOF'
 SOURCE_DIR=/mnt/hd4tb/OneDrive/Pictures/Camera Roll
 ORGANIZED_DIR=/mnt/hd4tb/Fotos
 TRASH_DIR=/mnt/hd4tb/Fotos/.trash
+ORGANIZATION_PATTERN=year_month
+LIBRARY_FOLDERS=/mnt/g/fotos/pasta1,/mnt/g/fotos/pasta2
 AZURE_OPENAI_ENDPOINT=https://seu-endpoint.openai.azure.com/
 AZURE_OPENAI_KEY=sua-chave-aqui
 AZURE_OPENAI_DEPLOYMENT=gpt-4o
@@ -68,8 +72,17 @@ Acesse: **http://localhost:5173**
 
 1. Abra **Configurações** (ícone ⚙️ na sidebar)
 2. Ajuste os paths de **Source**, **Organizadas** e **Trash** para o seu HD
-3. Clique **Salvar**
-4. Vá em **Início** e clique **Escanear** — o sistema organiza tudo automaticamente
+3. Escolha o **Padrão de Organização**:
+   - **Hierárquico** (`YYYY/MM/`): ex: `2021/05/foto.jpg`
+   - **Flat** (`YYYY_MM/`): ex: `2021_05/foto.jpg` — permite pastas manuais como `2021_05_aniversario_fulano/`
+4. Adicione **Pastas de Biblioteca** extras se tiver fotos em vários locais (ex: `/mnt/g/fotos/pasta1`, `/mnt/g/fotos/pasta2`)
+5. Clique **Salvar**
+6. Vá em **Início** e clique **Escanear** — o sistema organiza tudo automaticamente
+
+### Padrão de Organização Flat
+
+No modo flat, pastas como `2021_05/` e `2021_05_aniversario_fulano/` coexistem **separadas** — o sistema não agrupa nem mescla.
+Útil para quem já tem coleções organizadas manualmente com descrição no nome da pasta.
 
 ## Migração entre PCs
 
