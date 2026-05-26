@@ -11,6 +11,7 @@ exifread==3.0.0
 ffmpeg-python==0.2.0
 openai==1.51.0
 numpy==1.26.4
+onnxruntime==1.19.2
 scikit-learn==1.5.2
 mediapipe==0.10.14
 aiofiles==24.1.0
