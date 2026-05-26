@@ -5,79 +5,111 @@ Sistema organizador de fotos e vídeos pessoais com reconhecimento facial, de lo
 ## Funcionalidades
 
 - **Organização automática**: Importa fotos/vídeos e organiza por ano/mês
-- **Detecção de duplicatas**: SHA256 + perceptual hash (pHash)
+- **Detecção de duplicatas**: SHA256 por conteúdo (não por nome — suporta câmeras diferentes)
 - **Reconhecimento facial**: Detecta e agrupa rostos com ArcFace + MediaPipe
 - **Descrição de cenas**: Azure OpenAI Vision descreve conteúdo, locais e contexto
-- **Busca inteligente**: Busca por texto livre (ex: "praia dezembro 2025")
-- **Interface web**: Galeria, player de vídeo, slideshow, busca
+- **Busca inteligente**: Busca por texto livre, data, extensão, nome
+- **Interface web**: Galeria, player de vídeo, slideshow, drag-select
+- **Backup/Restore**: ZIP com banco completo (faces, AI, albums) — portátil entre PCs
+- **Configurações via UI**: Paths de source/organized/trash configuráveis
+- **Nunca deleta**: Arquivos só são movidos (source → organized → trash)
 
-## Pré-requisitos
-
-- **WSL2** (Ubuntu 22.04+ recomendado) ou Linux nativo
-- **Python 3.11+**
-- **Node.js 18+** (recomendado 20)
-- **ffmpeg** (`sudo apt install ffmpeg`)
-- Conta **Azure OpenAI** com deployment GPT-4o (para descrição de cenas)
-
-## Quick Start (WSL / Linux)
+## Setup Rápido (novo PC com WSL)
 
 ```bash
-# 1. Clone o repositório
+# 1. Instalar pré-requisitos (Python 3.12 — NÃO usar 3.13+)
+sudo apt update && sudo apt install -y software-properties-common ffmpeg git
+sudo add-apt-repository -y ppa:deadsnakes/ppa && sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3.12-dev
+
+# 2. Instalar Node.js (via nvm)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
+nvm install 20
+
+# 3. Clonar o repositório
 git clone https://github.com/klaused-spec/pics.git
 cd pics
 
-# 2. Baixe os modelos de reconhecimento facial (~330MB)
-chmod +x download-models.sh
-./download-models.sh
+# 4. Setup backend
+cd backend
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-# 3. Rode o setup (cria venv, instala dependências)
-chmod +x setup.sh
-./setup.sh
+# 5. Setup frontend
+cd ../frontend
+npm install
 
-# 4. Configure o backend
-cp backend/.env.example backend/.env
-nano backend/.env  # preencha suas credenciais
+# 6. Configurar paths (criar .env no backend)
+cat > ../backend/.env << 'EOF'
+SOURCE_DIR=/mnt/hd4tb/OneDrive/Pictures/Camera Roll
+ORGANIZED_DIR=/mnt/hd4tb/Fotos
+TRASH_DIR=/mnt/hd4tb/Fotos/.trash
+AZURE_OPENAI_ENDPOINT=https://seu-endpoint.openai.azure.com/
+AZURE_OPENAI_KEY=sua-chave-aqui
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+EOF
 
-# 5. Inicie o backend (terminal 1)
-cd backend && source venv/bin/activate
-uvicorn app.main:app --reload --port 8000
+# 7. Montar HD 4TB (se externo)
+sudo mkdir -p /mnt/hd4tb
+sudo mount /dev/sdX1 /mnt/hd4tb  # ajuste o device
 
-# 6. Inicie o frontend (terminal 2)
+# 8. Iniciar (2 terminais ou use start.sh)
+# Terminal 1 - Backend:
+cd backend && source venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Terminal 2 - Frontend:
 cd frontend && npm run dev
 ```
 
 Acesse: **http://localhost:5173**
 
-## Via Docker Compose
+## Após o Clone
+
+1. Abra **Configurações** (ícone ⚙️ na sidebar)
+2. Ajuste os paths de **Source**, **Organizadas** e **Trash** para o seu HD
+3. Clique **Salvar**
+4. Vá em **Início** e clique **Escanear** — o sistema organiza tudo automaticamente
+
+## Migração entre PCs
+
+1. No PC antigo: **Configurações → Backup** (baixa ZIP com banco + configs)
+2. No PC novo: clone o repo, rode setup, monte o HD
+3. **Configurações → Restaurar** (sobe o ZIP)
+4. Ajuste os paths se o ponto de montagem mudou
+5. Tudo funciona: faces, descrições IA, albums — tudo linkado por SHA256
+
+## Pré-requisitos
+
+- **WSL2** (Ubuntu 22.04+) ou Linux nativo
+- **Python 3.12** (⚠️ Python 3.13+ NÃO funciona — mediapipe/onnxruntime não têm builds)
+- **Node.js 18+** (recomendado 20)
+- **ffmpeg** (`sudo apt install ffmpeg`)
+- Conta **Azure OpenAI** com deployment GPT-4o (opcional, para descrição de cenas)
+
+### Instalar Python 3.12 (Ubuntu/WSL)
 
 ```bash
-# 1. Clone e configure
-git clone https://github.com/klaused-spec/pics.git
-cd pics
-cp backend/.env.example backend/.env
-nano backend/.env
-
-# 2. Baixe os modelos
-chmod +x download-models.sh
-./download-models.sh
-
-# 3. Suba os containers
-docker compose up --build
+sudo apt update
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3.12-dev
+python3.12 --version
 ```
-
-Acesse: **http://localhost:5173**
 
 ## Configuração (.env)
 
-Copie `backend/.env.example` para `backend/.env` e preencha:
-
 | Variável | Descrição |
 |----------|-----------|
+| `SOURCE_DIR` | Pasta de origem das fotos (ex: `/mnt/hd4tb/OneDrive/Pictures`) |
+| `ORGANIZED_DIR` | Pasta destino organizada (ex: `/mnt/hd4tb/Fotos`) |
+| `TRASH_DIR` | Lixeira (ex: `/mnt/hd4tb/Fotos/.trash`) |
 | `AZURE_OPENAI_ENDPOINT` | Endpoint do Azure OpenAI |
 | `AZURE_OPENAI_KEY` | Chave de API |
 | `AZURE_OPENAI_DEPLOYMENT` | Nome do deployment (ex: `gpt-4o`) |
-| `SOURCE_DIR` | Pasta de origem das fotos (ex: `/mnt/c/Users/you/OneDrive/Pictures`) |
-| `ORGANIZED_DIR` | Pasta destino organizada |
+
+Também configurável via UI em **Configurações**.
 
 ## Arquitetura
 
@@ -104,5 +136,10 @@ pics/
 ## Notas para WSL
 
 - Para acessar fotos do Windows: monte via `/mnt/c/Users/SeuUsuario/...`
-- Para HDs externos no WSL: monte com `sudo mount /dev/sdX1 /mnt/meuHD`
+- Para HDs externos/internos no WSL2: `sudo mount /dev/sdX1 /mnt/hd4tb`
+- Para montar automaticamente no boot, adicione ao `/etc/fstab`:
+  ```
+  /dev/sdb1 /mnt/hd4tb ext4 defaults 0 2
+  ```
 - O SQLite funciona bem para uso pessoal; o banco fica em `backend/pics.db`
+- Modelos ONNX (~330MB) ficam em `backend/models/` e NÃO são versionados no git
