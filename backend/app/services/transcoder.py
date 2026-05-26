@@ -141,11 +141,15 @@ def transcode_video(original_path: str) -> str:
             stderr = proc.stderr.read() if proc.stderr else ""
             if os.path.exists(output_path):
                 os.remove(output_path)
-            _write_progress(progress_file, -1)
+            if os.path.exists(progress_file):
+                os.remove(progress_file)
             logger.error(f"Erro ao transcodificar {original_path}: {stderr[-500:]}")
             raise RuntimeError(f"ffmpeg falhou: {stderr[-200:]}")
 
         _write_progress(progress_file, 100)
+        # Limpar arquivo de progresso após conclusão
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
         logger.info(f"Transcoded OK: {output_path} ({os.path.getsize(output_path) / 1024 / 1024:.1f} MB)")
         return output_path
 

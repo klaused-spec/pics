@@ -439,8 +439,9 @@ def delete_original_video(media_id: int, db: Session = Depends(get_db)):
 
     # Mover original para .trash local
     from app.services.organizer import move_to_trash as _move_to_trash
+    trash_path = None
     if os.path.exists(filepath):
-        _move_to_trash(filepath)
+        trash_path = _move_to_trash(filepath)
 
     # Atualizar banco para apontar para o transcoded
     if media.organized_path:
