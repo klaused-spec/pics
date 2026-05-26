@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Database, FolderOpen, Download, Upload, Save, AlertTriangle, Trash2, Plus, X } from 'lucide-react'
 import { getSettings, updateSettings, backupDatabase, restoreDatabase } from '../api'
+import api from '../api'
 
 export default function Settings() {
   const [paths, setPaths] = useState({ source_dir: '', organized_dir: '', database_path: '', organization_pattern: 'year/month', library_folders: [], allow_library_modify: false })
   const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState(null)
+  const [message, setMessage] = useState(null) // { type, text, section }
+
   const [newFolder, setNewFolder] = useState('')
+  const [restoreConfirm, setRestoreConfirm] = useState(false)
+  const [restoreFile, setRestoreFile] = useState(null)
+  const [resetConfirm, setResetConfirm] = useState(0) // 0=idle, 1=first confirm, 2=confirmed
   const fileRef = useRef()
 
   useEffect(() => {
@@ -24,9 +29,9 @@ export default function Settings() {
         library_folders: paths.library_folders,
         allow_library_modify: paths.allow_library_modify,
       })
-      setMessage({ type: 'success', text: 'Configurações salvas!' })
+      setMessage({ type: 'success', text: 'Configurações salvas!', section: 'paths' })
     } catch (e) {
-      setMessage({ type: 'error', text: e.response?.data?.detail || 'Erro ao salvar' })
+      setMessage({ type: 'error', text: e.response?.data?.detail || 'Erro ao salvar', section: 'paths' })
     }
     setSaving(false)
   }
@@ -49,38 +54,57 @@ export default function Settings() {
       const url = window.URL.createObjectURL(new Blob([res.data]))
       const a = document.createElement('a')
       a.href = url
-      a.download = `pics_backup_${new Date().toISOString().slice(0, 10)}.db`
+      a.download = `pics_backup_${new Date().toISOString().slice(0, 10)}.zip`
       a.click()
       window.URL.revokeObjectURL(url)
-      setMessage({ type: 'success', text: 'Backup baixado!' })
+      setMessage({ type: 'success', text: 'Backup baixado!', section: 'db' })
     } catch {
-      setMessage({ type: 'error', text: 'Erro ao fazer backup' })
+      setMessage({ type: 'error', text: 'Erro ao fazer backup', section: 'db' })
     }
   }
 
-  const handleRestore = async (e) => {
+  const handleFileSelect = (e) => {
     const file = e.target.files[0]
     if (!file) return
-    if (!confirm('ATENÇÃO: Isso vai substituir o banco atual. O banco atual será salvo como backup. Continuar?')) return
-    try {
-      await restoreDatabase(file)
-      setMessage({ type: 'success', text: 'Banco restaurado! Reinicie o backend.' })
-    } catch (err) {
-      setMessage({ type: 'error', text: err.response?.data?.detail || 'Erro ao restaurar' })
-    }
+    setRestoreFile(file)
+    setRestoreConfirm(true)
     e.target.value = ''
   }
 
-  const handleReset = async () => {
-    if (!confirm('⚠️ ATENÇÃO: Isso vai ZERAR todo o banco (faces, AI, albums) e mover os arquivos de volta para o source. Tem certeza?')) return
-    if (!confirm('Última chance! Isso é irreversível. Continuar?')) return
+  const handleRestoreConfirm = async () => {
+    if (!restoreFile) return
+    setRestoreConfirm(false)
     try {
-      const res = await fetch('/api/settings/reset', { method: 'POST' })
-      const data = await res.json()
-      setMessage({ type: 'success', text: data.message })
-    } catch {
-      setMessage({ type: 'error', text: 'Erro ao resetar' })
+      await restoreDatabase(restoreFile)
+      setMessage({ type: 'success', text: 'Banco restaurado! Reinicie o backend.', section: 'db' })
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.detail || 'Erro ao restaurar', section: 'db' })
     }
+    setRestoreFile(null)
+  }
+
+  const handleRestoreCancel = () => {
+    setRestoreConfirm(false)
+    setRestoreFile(null)
+  }
+
+  const handleResetClick = () => {
+    if (resetConfirm === 0) {
+      setResetConfirm(1)
+    } else if (resetConfirm === 1) {
+      setResetConfirm(2)
+      handleResetExecute()
+    }
+  }
+
+  const handleResetExecute = async () => {
+    try {
+      const res = await api.post('/settings/reset')
+      setMessage({ type: 'success', text: res.data.message, section: 'reset' })
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.detail || 'Erro ao resetar', section: 'reset' })
+    }
+    setResetConfirm(0)
   }
 
   return (
@@ -88,12 +112,6 @@ export default function Settings() {
       <h1 className="text-2xl font-bold flex items-center gap-2">
         <SettingsIcon className="w-6 h-6" /> Configurações
       </h1>
-
-      {message && (
-        <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-          {message.text}
-        </div>
-      )}
 
       {/* Diretórios */}
       <section className="bg-white rounded-xl shadow p-6 space-y-4">
@@ -135,6 +153,12 @@ export default function Settings() {
         >
           <Save className="w-4 h-4" /> {saving ? 'Salvando...' : 'Salvar'}
         </button>
+
+        {message?.section === 'paths' && (
+          <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+            {message.text}
+          </div>
+        )}
       </section>
 
       {/* Padrão de Organização */}
@@ -232,6 +256,12 @@ export default function Settings() {
         >
           <Save className="w-4 h-4" /> {saving ? 'Salvando...' : 'Salvar'}
         </button>
+
+        {message?.section === 'paths' && (
+          <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+            {message.text}
+          </div>
+        )}
       </section>
 
       {/* Banco de dados */}
@@ -248,21 +278,52 @@ export default function Settings() {
           Faça backup regularmente para não perder esse conhecimento.
         </p>
 
-        <div className="flex gap-3">
-          <button
-            onClick={handleBackup}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-          >
-            <Download className="w-4 h-4" /> Backup
-          </button>
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-3">
+            <button
+              onClick={handleBackup}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+            >
+              <Download className="w-4 h-4" /> Backup
+            </button>
 
-          <button
-            onClick={() => fileRef.current.click()}
-            className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700"
-          >
-            <Upload className="w-4 h-4" /> Restaurar
-          </button>
-          <input ref={fileRef} type="file" accept=".db,.zip" className="hidden" onChange={handleRestore} />
+            <button
+              onClick={() => fileRef.current.click()}
+              className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700"
+            >
+              <Upload className="w-4 h-4" /> Restaurar
+            </button>
+            <input ref={fileRef} type="file" accept=".db,.zip" className="hidden" onChange={handleFileSelect} />
+          </div>
+
+          {restoreConfirm && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg space-y-2">
+              <p className="text-sm text-amber-800 font-medium">
+                ⚠️ ATENÇÃO: Isso vai substituir o banco atual. O banco atual será salvo como backup.
+              </p>
+              <p className="text-xs text-amber-700">Arquivo: {restoreFile?.name}</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleRestoreConfirm}
+                  className="px-3 py-1 bg-amber-600 text-white rounded text-sm hover:bg-amber-700"
+                >
+                  Confirmar Restauração
+                </button>
+                <button
+                  onClick={handleRestoreCancel}
+                  className="px-3 py-1 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+
+          {message?.section === 'db' && (
+            <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+              {message.text}
+            </div>
+          )}
         </div>
       </section>
 
@@ -275,12 +336,41 @@ export default function Settings() {
           Apaga todo o banco (faces, descrições IA, albums, media) e move os arquivos organizados de volta para o source.
           Use antes de reprocessar tudo do zero.
         </p>
-        <button
-          onClick={handleReset}
-          className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
-        >
-          <Trash2 className="w-4 h-4" /> Resetar Tudo
-        </button>
+        {resetConfirm === 0 && (
+          <button
+            onClick={handleResetClick}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+          >
+            <Trash2 className="w-4 h-4" /> Resetar Tudo
+          </button>
+        )}
+        {resetConfirm === 1 && (
+          <div className="p-3 bg-red-50 border border-red-300 rounded-lg space-y-2">
+            <p className="text-sm text-red-800 font-medium">
+              ⚠️ Isso vai ZERAR todo o banco e mover arquivos de volta ao source. Tem certeza?
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleResetClick}
+                className="px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700"
+              >
+                Sim, Resetar Tudo
+              </button>
+              <button
+                onClick={() => setResetConfirm(0)}
+                className="px-3 py-1 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {message?.section === 'reset' && (
+          <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+            {message.text}
+          </div>
+        )}
       </section>
     </div>
   )

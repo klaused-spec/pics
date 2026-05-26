@@ -6,6 +6,7 @@ __pycache__/
 venv/
 .env
 *.db
+*.db.before_restore_*
 *.egg-info/
 dist/
 build/

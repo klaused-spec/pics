@@ -150,7 +150,10 @@ async def restore_database(file: UploadFile = File(...)):
 
     import sqlite3
 
-    if file.filename.endswith(".zip"):
+    # Detecta ZIP por magic bytes (PK\x03\x04) independente da extensão
+    is_zip = content[:4] == b'PK\x03\x04'
+
+    if is_zip:
         # Extrai ZIP
         zip_path = os.path.join(temp_dir, "backup.zip")
         with open(zip_path, "wb") as f:
