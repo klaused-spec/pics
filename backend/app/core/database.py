@@ -37,6 +37,14 @@ def _run_migrations():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Criar tabela kv_store para backup de configurações
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kv_store (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
     # Verificar colunas existentes na tabela media
     cursor.execute("PRAGMA table_info(media)")
     existing_cols = {row[1] for row in cursor.fetchall()}
@@ -61,3 +69,54 @@ def _run_migrations():
 
     conn.commit()
     conn.close()
+
+
+def backup_env_to_db():
+    """Salva o conteúdo do .env dentro do SQLite (tabela kv_store)."""
+    import sqlite3
+    from pathlib import Path
+
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    if not env_path.exists():
+        return
+
+    db_path = settings.database_url.replace("sqlite:///", "").replace("sqlite:////", "/")
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT)")
+    cursor.execute(
+        "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)",
+        ("env_backup", env_path.read_text()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def restore_env_from_db():
+    """Se .env não existe, extrai do SQLite."""
+    import sqlite3
+    from pathlib import Path
+
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    if env_path.exists():
+        return False
+
+    db_path = settings.database_url.replace("sqlite:///", "").replace("sqlite:////", "/")
+    if not Path(db_path).exists():
+        return False
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='kv_store'")
+    if not cursor.fetchone():
+        conn.close()
+        return False
+
+    cursor.execute("SELECT value FROM kv_store WHERE key = 'env_backup'")
+    row = cursor.fetchone()
+    conn.close()
+
+    if row and row[0]:
+        env_path.write_text(row[0])
+        return True
+    return False

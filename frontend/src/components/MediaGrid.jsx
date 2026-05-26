@@ -2,13 +2,17 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import { getThumbnailUrl } from '../api'
 import { Check } from 'lucide-react'
 
-function MediaGrid({ items, onSelect, selected, onSelectMultiple }) {
+function MediaGrid({ items, onSelect, selected, onSelectMultiple, thumbSize = 'medium' }) {
   const gridRef = useRef(null)
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragStart, setDragStart] = useState(null)
   const [dragRect, setDragRect] = useState(null)
-  const dragDidMove = useRef(false)
+  const dragState = useRef({ active: false, startX: 0, startY: 0, moved: false })
   const itemRefs = useRef({})
+
+  const gridClass = {
+    small: 'grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10',
+    medium: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
+    large: 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4',
+  }[thumbSize] || 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
 
   // Calcula quais itens estão dentro do retângulo de seleção
   const getItemsInRect = useCallback((rect) => {
@@ -32,70 +36,63 @@ function MediaGrid({ items, onSelect, selected, onSelectMultiple }) {
 
   function handleMouseDown(e) {
     if (!selected || e.button !== 0) return
-    // Ignora botões e inputs interativos
     if (e.target.closest('button, input, a')) return
     e.preventDefault()
-    setIsDragging(true)
-    dragDidMove.current = false
-    setDragStart({ x: e.clientX, y: e.clientY })
+    dragState.current = { active: true, startX: e.clientX, startY: e.clientY, moved: false }
     setDragRect(null)
-  }
 
-  function handleMouseMove(e) {
-    if (!isDragging || !dragStart) return
-    e.preventDefault()
-    const dx = Math.abs(e.clientX - dragStart.x)
-    const dy = Math.abs(e.clientY - dragStart.y)
-    // Só começa o arrasto visual após mover pelo menos 8px
-    if (dx < 8 && dy < 8) return
-    dragDidMove.current = true
-    const rect = {
-      x: Math.min(dragStart.x, e.clientX),
-      y: Math.min(dragStart.y, e.clientY),
-      w: Math.abs(e.clientX - dragStart.x),
-      h: Math.abs(e.clientY - dragStart.y),
-    }
-    setDragRect(rect)
-  }
-
-  function handleMouseUp(e) {
-    if (!isDragging) return
-    setIsDragging(false)
-
-    if (dragDidMove.current && dragRect && dragRect.w > 10 && dragRect.h > 10) {
-      // Arrasto: seleciona todos os itens na área de uma vez
-      const hitIds = getItemsInRect(dragRect)
-      if (hitIds.length > 0 && onSelectMultiple) {
-        onSelectMultiple(hitIds)
+    function onMove(ev) {
+      const { startX, startY } = dragState.current
+      const dx = Math.abs(ev.clientX - startX)
+      const dy = Math.abs(ev.clientY - startY)
+      if (dx < 8 && dy < 8) return
+      dragState.current.moved = true
+      const rect = {
+        x: Math.min(startX, ev.clientX),
+        y: Math.min(startY, ev.clientY),
+        w: Math.abs(ev.clientX - startX),
+        h: Math.abs(ev.clientY - startY),
       }
-    } else if (!dragDidMove.current) {
-      // Clique simples: busca o item sob o cursor
-      const el = e.target.closest('[data-media-item]')
-      if (el) {
-        const id = parseInt(el.dataset.mediaId)
-        const item = items.find(i => i.id === id)
-        if (item) onSelect?.(item)
-      }
+      setDragRect(rect)
     }
 
-    setDragStart(null)
-    setDragRect(null)
-    dragDidMove.current = false
-  }
+    function onUp(ev) {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
 
-  // Cancela drag se o mouse sair da janela
-  useEffect(() => {
-    function handleGlobalUp() {
-      if (isDragging) {
-        setIsDragging(false)
-        setDragStart(null)
-        setDragRect(null)
-        dragDidMove.current = false
+      const { moved } = dragState.current
+      dragState.current.active = false
+
+      if (moved) {
+        // Calcula rect final
+        const { startX, startY } = dragState.current
+        const rect = {
+          x: Math.min(startX, ev.clientX),
+          y: Math.min(startY, ev.clientY),
+          w: Math.abs(ev.clientX - startX),
+          h: Math.abs(ev.clientY - startY),
+        }
+        if (rect.w > 10 && rect.h > 10) {
+          const hitIds = getItemsInRect(rect)
+          if (hitIds.length > 0 && onSelectMultiple) {
+            onSelectMultiple(hitIds)
+          }
+        }
+      } else {
+        // Clique simples
+        const el = ev.target.closest('[data-media-item]')
+        if (el) {
+          const id = parseInt(el.dataset.mediaId)
+          const item = items.find(i => i.id === id)
+          if (item) onSelect?.(item)
+        }
       }
+      setDragRect(null)
     }
-    window.addEventListener('mouseup', handleGlobalUp)
-    return () => window.removeEventListener('mouseup', handleGlobalUp)
-  }, [isDragging])
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
 
   if (!items || items.length === 0) {
     return (
@@ -108,13 +105,11 @@ function MediaGrid({ items, onSelect, selected, onSelectMultiple }) {
   return (
     <div
       ref={gridRef}
-      className="relative grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 p-4 select-none"
+      className={`relative grid ${gridClass} gap-2 p-4 select-none`}
       onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
     >
       {/* Retângulo de seleção visual */}
-      {isDragging && dragRect && dragRect.w > 5 && (
+      {dragRect && dragRect.w > 5 && (
         <div
           className="fixed border-2 border-blue-400 bg-blue-400/20 rounded pointer-events-none z-50"
           style={{ left: dragRect.x, top: dragRect.y, width: dragRect.w, height: dragRect.h }}
@@ -143,6 +138,7 @@ function MediaGrid({ items, onSelect, selected, onSelectMultiple }) {
             alt={item.ai_description || item.filename}
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             loading="lazy"
+            draggable={false}
           />
 
           {/* Checkbox de seleção */}

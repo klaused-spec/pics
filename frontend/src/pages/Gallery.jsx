@@ -21,6 +21,7 @@ function Gallery() {
     const saved = localStorage.getItem('gallery_per_page')
     return saved ? parseInt(saved) : 60
   })
+  const [thumbSize, setThumbSize] = useState(() => localStorage.getItem('gallery_thumb_size') || 'medium')
   const navigate = useNavigate()
 
   const tab = searchParams.get('tab') || 'data'
@@ -299,6 +300,19 @@ function Gallery() {
                       <Play size={16} />
                       Slideshow
                     </button>
+                    <div className="flex items-center gap-1 bg-gray-700 rounded-lg p-0.5">
+                      {[['small', 'P'], ['medium', 'M'], ['large', 'G']].map(([size, label]) => (
+                        <button
+                          key={size}
+                          onClick={() => { setThumbSize(size); localStorage.setItem('gallery_thumb_size', size) }}
+                          className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            thumbSize === size ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </>
                 )}
               </div>
@@ -311,7 +325,7 @@ function Gallery() {
               </div>
             ) : (
               <div className="flex-1 overflow-auto">
-                <MediaGrid items={items} onSelect={handleSelect} selected={selectMode ? selected : null} />
+                <MediaGrid items={items} onSelect={handleSelect} selected={selectMode ? selected : null} onSelectMultiple={handleSelectMultiple} thumbSize={thumbSize} />
                 {total > perPage && (
                   <div className="flex items-center justify-center gap-3 p-4">
                     <button

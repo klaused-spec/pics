@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
-from app.core.database import init_db
+from app.core.database import init_db, backup_env_to_db, restore_env_from_db
 from app.api import media_router, persons_router, jobs_router, albums_router, settings_router
 from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync
 
@@ -29,7 +29,9 @@ scheduler = BackgroundScheduler()
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Inicializando PICS...")
+    restore_env_from_db()
     init_db()
+    backup_env_to_db()
 
     # Agenda scan periódico
     scheduler.add_job(

@@ -90,6 +90,10 @@ def update_paths(config: PathsConfig):
     }
     _save_env(env_data)
 
+    # Backup .env no DB
+    from app.core.database import backup_env_to_db
+    backup_env_to_db()
+
     return {"status": "ok", "message": "Configurações atualizadas"}
 
 
