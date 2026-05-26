@@ -73,6 +73,7 @@ class Media(Base):
     ai_objects = Column(JSON, nullable=True)  # Lista de objetos detectados
     ai_processed = Column(Boolean, default=False, index=True)
     ai_processed_at = Column(DateTime, nullable=True)
+    faces_processed = Column(Boolean, default=False, index=True)
 
     # Status de processamento
     is_organized = Column(Boolean, default=False, index=True)

@@ -143,17 +143,11 @@ def run_face_detection(batch_size: int = None) -> int:
         db.commit()
 
         # Busca imagens organizadas que não têm rostos processados
-        # (exclui mídias que já estão na tabela media_faces)
-        from sqlalchemy import not_, exists
-        from app.models import media_faces
-
-        processed_ids = db.query(media_faces.c.media_id).distinct()
-
         pending = db.query(Media).filter(
             Media.media_type == "image",
             Media.is_duplicate == False,
             Media.is_organized == True,
-            ~Media.id.in_(processed_ids),
+            Media.faces_processed == False,
         ).limit(batch_size).all()
 
         job.total_items = len(pending)
@@ -165,11 +159,14 @@ def run_face_detection(batch_size: int = None) -> int:
             try:
                 faces = process_faces_in_media(media, db)
                 total_faces += len(faces)
+                media.faces_processed = True
                 processed += 1
                 job.processed_items = processed
                 db.commit()
             except Exception as e:
                 logger.error(f"Erro na detecção facial para {media.filename}: {e}")
+                media.faces_processed = True  # Marca como processado mesmo com erro para não retentar infinitamente
+                db.commit()
                 continue
 
         # Tenta agrupar rostos desconhecidos

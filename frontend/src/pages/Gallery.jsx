@@ -17,11 +17,16 @@ function Gallery() {
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState(new Set())
   const [showAlbumPicker, setShowAlbumPicker] = useState(false)
+  const [perPage, setPerPage] = useState(() => {
+    const saved = localStorage.getItem('gallery_per_page')
+    return saved ? parseInt(saved) : 60
+  })
   const navigate = useNavigate()
 
   const tab = searchParams.get('tab') || 'data'
   const year = searchParams.get('year')
   const month = searchParams.get('month')
+  const mediaType = searchParams.get('media_type')
 
   useEffect(() => {
     if (tab === 'data') {
@@ -30,14 +35,15 @@ function Gallery() {
     } else {
       loadAlbums()
     }
-  }, [page, year, month, tab])
+  }, [page, perPage, year, month, tab, mediaType])
 
   async function loadMedia() {
     setLoading(true)
     try {
-      const params = { page, per_page: 60 }
+      const params = { page, per_page: perPage }
       if (year) params.year = parseInt(year)
       if (month) params.month = parseInt(month)
+      if (mediaType) params.media_type = mediaType
 
       const res = await getMedia(params)
       setItems(res.data.items)
@@ -50,7 +56,9 @@ function Gallery() {
 
   async function loadTimeline() {
     try {
-      const res = await getTimeline()
+      const params = {}
+      if (mediaType) params.media_type = mediaType
+      const res = await getTimeline(params)
       setTimeline(res.data)
     } catch (err) {
       console.error('Erro ao carregar timeline:', err)
@@ -93,6 +101,12 @@ function Gallery() {
     } else {
       navigate(`/media/${item.id}`)
     }
+  }
+
+  function handleSelectMultiple(ids) {
+    const next = new Set(selected)
+    ids.forEach(id => next.add(id))
+    setSelected(next)
   }
 
   async function handleAddToAlbum(albumId) {
@@ -223,9 +237,14 @@ function Gallery() {
             <div className="flex items-center justify-between p-4 border-b border-gray-700">
               <div>
                 <h2 className="text-lg font-semibold">
-                  {year ? `${monthNames[parseInt(month)] || ''} ${year}` : 'Todas as fotos'}
+                  {mediaType === 'video' ? 'Vídeos' : mediaType === 'image' ? 'Fotos' : year ? `${monthNames[parseInt(month)] || ''} ${year}` : 'Todas as mídias'}
                 </h2>
-                <p className="text-sm text-gray-400">{total} itens</p>
+                <p className="text-sm text-gray-400">
+                  {total} itens
+                  {mediaType && (
+                    <button onClick={() => { const p = new URLSearchParams(searchParams); p.delete('media_type'); setSearchParams(p); setPage(1) }} className="ml-2 text-blue-400 hover:text-blue-300">✕ limpar filtro</button>
+                  )}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 {selectMode ? (
@@ -293,8 +312,8 @@ function Gallery() {
             ) : (
               <div className="flex-1 overflow-auto">
                 <MediaGrid items={items} onSelect={handleSelect} selected={selectMode ? selected : null} />
-                {total > 60 && (
-                  <div className="flex justify-center gap-2 p-4">
+                {total > perPage && (
+                  <div className="flex items-center justify-center gap-3 p-4">
                     <button
                       disabled={page <= 1}
                       onClick={() => setPage(p => p - 1)}
@@ -303,15 +322,25 @@ function Gallery() {
                       Anterior
                     </button>
                     <span className="px-3 py-1 text-sm text-gray-400">
-                      Página {page} de {Math.ceil(total / 60)}
+                      Página {page} de {Math.ceil(total / perPage)}
                     </span>
                     <button
-                      disabled={page >= Math.ceil(total / 60)}
+                      disabled={page >= Math.ceil(total / perPage)}
                       onClick={() => setPage(p => p + 1)}
                       className="px-3 py-1 bg-gray-700 rounded disabled:opacity-50 text-sm"
                     >
                       Próxima
                     </button>
+                    <select
+                      value={perPage}
+                      onChange={e => { const v = parseInt(e.target.value); setPerPage(v); localStorage.setItem('gallery_per_page', v); setPage(1) }}
+                      className="px-2 py-1 bg-gray-700 rounded text-sm text-gray-300 border border-gray-600"
+                    >
+                      <option value={30}>30/pág</option>
+                      <option value={60}>60/pág</option>
+                      <option value={120}>120/pág</option>
+                      <option value={200}>200/pág</option>
+                    </select>
                   </div>
                 )}
               </div>

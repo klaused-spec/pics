@@ -297,6 +297,51 @@ def list_pending_faces(
     return {"total": total, "page": page, "per_page": per_page, "items": items}
 
 
+@router.get("/faces/all")
+def list_all_faces(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    person_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Lista TODOS os rostos (incluindo confirmados e ignorados)."""
+    query = db.query(Face).order_by(Face.id.desc())
+
+    if person_id is not None:
+        query = query.filter(Face.person_id == person_id)
+
+    total = query.count()
+    faces = query.offset((page - 1) * per_page).limit(per_page).all()
+
+    items = []
+    for f in faces:
+        media = f.media_items[0] if f.media_items else None
+        items.append({
+            "id": f.id,
+            "bbox": {"x": f.bbox_x, "y": f.bbox_y, "w": f.bbox_width, "h": f.bbox_height},
+            "person_id": f.person_id,
+            "person_name": f.person.name if f.person else None,
+            "confidence": f.confidence,
+            "is_confirmed": f.is_confirmed,
+            "is_ignored": f.is_ignored,
+            "media_id": media.id if media else None,
+            "media_filename": media.filename if media else None,
+        })
+
+    return {"total": total, "page": page, "per_page": per_page, "items": items}
+
+
+@router.delete("/faces/{face_id}")
+def delete_face(face_id: int, db: Session = Depends(get_db)):
+    """Remove um rosto do banco de dados."""
+    face = db.query(Face).get(face_id)
+    if not face:
+        raise HTTPException(status_code=404, detail="Rosto não encontrado")
+    db.delete(face)
+    db.commit()
+    return {"message": "Rosto removido"}
+
+
 @router.get("/faces/{face_id}/thumbnail")
 def get_face_thumbnail(face_id: int, size: int = Query(120, ge=40, le=400), db: Session = Depends(get_db)):
     """Retorna thumbnail do rosto cortado da imagem original."""

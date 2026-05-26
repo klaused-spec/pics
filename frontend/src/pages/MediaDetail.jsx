@@ -177,11 +177,11 @@ function MediaDetail() {
       <div className="flex-1 flex flex-col bg-black">
         <div className="p-3">
           <button
-            onClick={() => navigate('/gallery')}
+            onClick={() => navigate(-1)}
             className="flex items-center gap-2 text-gray-400 hover:text-white text-sm"
           >
             <ArrowLeft size={16} />
-            Galeria
+            Voltar
           </button>
         </div>
 
@@ -589,7 +589,7 @@ function MediaDetail() {
                   if (!confirm('Mover este arquivo para .trash? (pode ser recuperado)')) return
                   try {
                     await deleteMedia(media.id)
-                    navigate('/gallery')
+                    navigate(-1)
                   } catch (err) {
                     alert('Erro: ' + (err.response?.data?.detail || err.message))
                   }

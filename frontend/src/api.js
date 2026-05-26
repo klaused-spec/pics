@@ -9,8 +9,10 @@ export const getMedia = (params) => api.get('/media/', { params })
 export const getMediaById = (id) => api.get(`/media/${id}`)
 export const getMediaNeighbors = (id) => api.get(`/media/${id}/neighbors`)
 export const searchMedia = (q, limit = 50) => api.get('/media/search', { params: { q, limit } })
-export const getTimeline = () => api.get('/media/timeline')
+export const getTimeline = (params) => api.get('/media/timeline', { params })
 export const getStats = () => api.get('/media/stats')
+export const getDuplicates = () => api.get('/media/duplicates')
+export const deleteAllDuplicates = () => api.delete('/media/duplicates/all')
 
 // Pessoas
 export const getPersons = (params) => api.get('/persons/', { params })
@@ -31,8 +33,8 @@ export const runClustering = () => api.post('/persons/cluster')
 // Jobs
 export const getJobs = (params) => api.get('/jobs/', { params })
 export const startScan = () => api.post('/jobs/scan')
-export const startAiProcessing = (batchSize = 10) => api.post('/jobs/ai-process', null, { params: { batch_size: batchSize } })
-export const startFaceDetection = (batchSize = 10) => api.post('/jobs/face-detect', null, { params: { batch_size: batchSize } })
+export const startAiProcessing = () => api.post('/jobs/ai-process', null, { params: { batch_size: 99999 } })
+export const startFaceDetection = () => api.post('/jobs/face-detect', null, { params: { batch_size: 99999 } })
 export const startFullPipeline = () => api.post('/jobs/full-pipeline')
 export const startSync = () => api.post('/jobs/sync')
 

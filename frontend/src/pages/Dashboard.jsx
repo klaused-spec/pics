@@ -13,8 +13,15 @@ function Dashboard() {
     loadData()
   }, [])
 
+  // Auto-refresh enquanto houver job rodando
+  useEffect(() => {
+    const hasRunning = jobs.some(j => j.status === 'running')
+    if (!hasRunning) return
+    const interval = setInterval(loadData, 3000)
+    return () => clearInterval(interval)
+  }, [jobs])
+
   async function loadData() {
-    setLoading(true)
     try {
       const [statsRes, jobsRes] = await Promise.all([
         getStats(),
@@ -52,12 +59,12 @@ function Dashboard() {
       {/* Estatísticas */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <StatCard icon={Image} label="Fotos" value={stats.images} color="blue" />
-          <StatCard icon={Video} label="Vídeos" value={stats.videos} color="purple" />
-          <StatCard icon={Users} label="Pessoas" value={stats.persons} color="green" />
+          <StatCard icon={Image} label="Fotos" value={stats.images} color="blue" onClick={() => navigate('/gallery?media_type=image')} />
+          <StatCard icon={Video} label="Vídeos" value={stats.videos} color="purple" onClick={() => navigate('/gallery?media_type=video')} />
+          <StatCard icon={Users} label="Pessoas" value={stats.persons} color="green" onClick={() => navigate('/persons')} />
           <StatCard icon={Brain} label="IA Processado" value={stats.ai_processed} color="yellow" />
-          <StatCard icon={AlertCircle} label="Duplicatas" value={stats.duplicates_found} color="red" />
-          <StatCard icon={Users} label="Rostos" value={stats.faces_detected} color="cyan" />
+          <StatCard icon={AlertCircle} label="Duplicatas" value={stats.duplicates_found} color="red" onClick={() => navigate('/duplicates')} />
+          <StatCard icon={Users} label="Rostos" value={stats.faces_detected} color="cyan" onClick={() => navigate('/persons/review')} />
         </div>
       )}
 
@@ -153,7 +160,7 @@ function Dashboard() {
   )
 }
 
-function StatCard({ icon: Icon, label, value, color }) {
+function StatCard({ icon: Icon, label, value, color, onClick }) {
   const colors = {
     blue: 'bg-blue-600/20 text-blue-400',
     purple: 'bg-purple-600/20 text-purple-400',
@@ -164,7 +171,7 @@ function StatCard({ icon: Icon, label, value, color }) {
   }
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4">
+    <div className={`bg-gray-800 rounded-lg p-4 ${onClick ? 'cursor-pointer hover:bg-gray-700 transition-colors' : ''}`} onClick={onClick}>
       <div className={`inline-flex p-2 rounded-lg ${colors[color]} mb-2`}>
         <Icon size={18} />
       </div>

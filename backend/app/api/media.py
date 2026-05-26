@@ -99,17 +99,22 @@ def search_media(
 
 @router.get("/timeline")
 def get_timeline(
+    media_type: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """Retorna timeline agrupada por ano/mês."""
-    results = (
+    q = (
         db.query(
             func.extract("year", Media.date_taken).label("year"),
             func.extract("month", Media.date_taken).label("month"),
             func.count(Media.id).label("count"),
         )
         .filter(Media.is_duplicate == False, Media.is_organized == True)
-        .group_by("year", "month")
+    )
+    if media_type:
+        q = q.filter(Media.media_type == media_type)
+    results = (
+        q.group_by("year", "month")
         .order_by(func.extract("year", Media.date_taken).desc(), func.extract("month", Media.date_taken).desc())
         .all()
     )
@@ -140,6 +145,108 @@ def get_stats(db: Session = Depends(get_db)):
         "ai_processed": ai_processed,
         "persons": persons,
         "faces_detected": faces,
+    }
+
+
+@router.delete("/duplicates/all")
+def delete_all_duplicates(db: Session = Depends(get_db)):
+    """
+    Move TODAS as duplicatas para .trash (mantém os originais).
+    """
+    import shutil
+
+    dupes = db.query(Media).filter(
+        Media.is_duplicate == True,
+        Media.duplicate_of_id.isnot(None),
+    ).all()
+
+    deleted = 0
+    errors = []
+    for dupe in dupes:
+        filepath = dupe.organized_path or dupe.original_path
+        if not filepath:
+            continue
+
+        # Determinar trash_dir
+        if _is_in_library_folder(filepath):
+            if not settings.allow_library_modify:
+                errors.append(f"{dupe.filename}: biblioteca protegida")
+                continue
+            abs_path = os.path.abspath(filepath)
+            trash_dir = None
+            for folder in settings.library_folders:
+                abs_folder = os.path.abspath(folder)
+                if abs_path.startswith(abs_folder + os.sep):
+                    trash_dir = os.path.join(folder, ".trash")
+                    break
+            if not trash_dir:
+                trash_dir = os.path.join(settings.organized_dir, ".trash")
+        else:
+            trash_dir = os.path.join(settings.organized_dir, ".trash")
+
+        os.makedirs(trash_dir, exist_ok=True)
+        trash_path = os.path.join(trash_dir, Path(filepath).name)
+
+        if os.path.exists(trash_path):
+            stem = Path(filepath).stem
+            ext = Path(filepath).suffix
+            i = 1
+            while os.path.exists(trash_path):
+                trash_path = os.path.join(trash_dir, f"{stem}_{i}{ext}")
+                i += 1
+
+        if os.path.exists(filepath):
+            shutil.move(filepath, trash_path)
+
+        for face in dupe.faces:
+            db.delete(face)
+        db.delete(dupe)
+        deleted += 1
+
+    db.commit()
+    return {"status": "ok", "deleted": deleted, "errors": errors}
+
+
+@router.get("/duplicates")
+def get_duplicates(db: Session = Depends(get_db)):
+    """
+    Retorna grupos de duplicatas.
+    Cada grupo contém o original + suas duplicatas para o usuário decidir qual manter.
+    """
+    # Busca todas as duplicatas que têm duplicate_of_id
+    dupes = db.query(Media).filter(
+        Media.is_duplicate == True,
+        Media.duplicate_of_id.isnot(None),
+    ).all()
+
+    # Agrupa por original
+    groups = {}
+    for dupe in dupes:
+        orig_id = dupe.duplicate_of_id
+        if orig_id not in groups:
+            original = db.query(Media).filter(Media.id == orig_id).first()
+            if not original:
+                continue
+            groups[orig_id] = {
+                "original": _media_summary(original),
+                "duplicates": [],
+            }
+        groups[orig_id]["duplicates"].append(_media_summary(dupe))
+
+    return list(groups.values())
+
+
+def _media_summary(media: Media) -> dict:
+    """Resumo compacto de uma mídia para listagem de duplicatas."""
+    return {
+        "id": media.id,
+        "filename": media.filename,
+        "organized_path": media.organized_path or media.original_path,
+        "media_type": media.media_type,
+        "date_taken": media.date_taken.isoformat() if media.date_taken else None,
+        "width": media.width,
+        "height": media.height,
+        "is_duplicate": media.is_duplicate,
     }
 
 

@@ -45,6 +45,7 @@ def _run_migrations():
         ("media", "video_codec", "TEXT"),
         ("media", "needs_transcode", "INTEGER DEFAULT 0"),
         ("media", "missing_since", "TEXT"),
+        ("media", "faces_processed", "INTEGER DEFAULT 0"),
     ]
 
     for table, col, col_type in migrations:

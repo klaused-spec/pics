@@ -53,7 +53,7 @@ def start_scan(background_tasks: BackgroundTasks):
 
 @router.post("/ai-process")
 def start_ai_processing(
-    batch_size: int = Query(10, ge=1, le=100),
+    batch_size: int = Query(99999, ge=1, le=100000),
     background_tasks: BackgroundTasks = None,
 ):
     """Inicia processamento com Azure OpenAI."""
@@ -63,7 +63,7 @@ def start_ai_processing(
 
 @router.post("/face-detect")
 def start_face_detection(
-    batch_size: int = Query(10, ge=1, le=100),
+    batch_size: int = Query(99999, ge=1, le=100000),
     background_tasks: BackgroundTasks = None,
 ):
     """Inicia detecção facial."""
@@ -73,13 +73,14 @@ def start_face_detection(
 
 @router.post("/full-pipeline")
 def start_full_pipeline(background_tasks: BackgroundTasks):
-    """Executa pipeline completo: sync → scan → organizar → IA → faces."""
+    """Executa pipeline completo: sync → scan → organizar → IA → faces. Processa TUDO pendente."""
 
-    async def full_pipeline():
+    def full_pipeline():
         run_sync()
         run_scan_and_organize()
-        run_ai_processing()
-        run_face_detection()
+        # Processa tudo pendente (sem limite de batch)
+        run_ai_processing(batch_size=99999)
+        run_face_detection(batch_size=99999)
 
     background_tasks.add_task(full_pipeline)
     return {"message": "Pipeline completo iniciado em background"}

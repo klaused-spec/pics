@@ -10,6 +10,7 @@ import FaceReview from './pages/FaceReview'
 import Slideshow from './pages/Slideshow'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
+import Duplicates from './pages/Duplicates'
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
         <Route path="persons/review" element={<FaceReview />} />
         <Route path="persons/:id" element={<PersonDetail />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="duplicates" element={<Duplicates />} />
         <Route path="dashboard" element={<Dashboard />} />
       </Route>
       <Route path="/slideshow" element={<Slideshow />} />

@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import { getThumbnailUrl } from '../api'
 import { Check } from 'lucide-react'
 
-function MediaGrid({ items, onSelect, selected }) {
+function MediaGrid({ items, onSelect, selected, onSelectMultiple }) {
   const gridRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState(null)
@@ -63,14 +63,11 @@ function MediaGrid({ items, onSelect, selected }) {
     setIsDragging(false)
 
     if (dragDidMove.current && dragRect && dragRect.w > 10 && dragRect.h > 10) {
-      // Arrasto: seleciona todos os itens na área
+      // Arrasto: seleciona todos os itens na área de uma vez
       const hitIds = getItemsInRect(dragRect)
-      hitIds.forEach(id => {
-        const item = items.find(i => i.id === id)
-        if (item && !selected.has(id)) {
-          onSelect?.(item)
-        }
-      })
+      if (hitIds.length > 0 && onSelectMultiple) {
+        onSelectMultiple(hitIds)
+      }
     } else if (!dragDidMove.current) {
       // Clique simples: busca o item sob o cursor
       const el = e.target.closest('[data-media-item]')
