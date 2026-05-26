@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getMediaById, getMediaNeighbors, getFileUrl, getStreamUrl, assignFace, unassignFace, confirmFace, ignoreFace, getPersons, createPerson, createManualFace, getAlbums, addMediaToAlbum, forceTranscode, getTranscodeStatus, deleteOriginalVideo } from '../api'
-import { ArrowLeft, ChevronLeft, ChevronRight, MapPin, Tag, User, Calendar, Camera, FolderPlus } from 'lucide-react'
+import { getMediaById, getMediaNeighbors, getFileUrl, getStreamUrl, assignFace, unassignFace, confirmFace, ignoreFace, getPersons, createPerson, createManualFace, getAlbums, addMediaToAlbum, forceTranscode, getTranscodeStatus, deleteOriginalVideo, deleteMedia, getSettings } from '../api'
+import { ArrowLeft, ChevronLeft, ChevronRight, MapPin, Tag, User, Calendar, Camera, FolderPlus, Trash2 } from 'lucide-react'
 
 const FACE_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
 
@@ -23,11 +23,13 @@ function MediaDetail() {
   const [neighbors, setNeighbors] = useState({ prev_id: null, next_id: null })
   const [albums, setAlbums] = useState([])
   const [showAlbumPicker, setShowAlbumPicker] = useState(false)
+  const [allowLibraryModify, setAllowLibraryModify] = useState(false)
 
   useEffect(() => {
     loadMedia()
     loadPersons()
     loadNeighbors()
+    getSettings().then(r => setAllowLibraryModify(r.data.allow_library_modify))
   }, [id])
 
   async function loadMedia() {
@@ -578,6 +580,26 @@ function MediaDetail() {
               </p>
             </div>
           </div>
+
+          {/* Botão Excluir */}
+          {allowLibraryModify && (
+            <div className="border-t border-gray-700 pt-3">
+              <button
+                onClick={async () => {
+                  if (!confirm('Mover este arquivo para .trash? (pode ser recuperado)')) return
+                  try {
+                    await deleteMedia(media.id)
+                    navigate('/gallery')
+                  } catch (err) {
+                    alert('Erro: ' + (err.response?.data?.detail || err.message))
+                  }
+                }}
+                className="flex items-center gap-2 px-3 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm text-white w-full justify-center"
+              >
+                <Trash2 size={14} /> Excluir arquivo
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

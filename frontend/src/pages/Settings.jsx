@@ -3,7 +3,7 @@ import { Settings as SettingsIcon, Database, FolderOpen, Download, Upload, Save,
 import { getSettings, updateSettings, backupDatabase, restoreDatabase } from '../api'
 
 export default function Settings() {
-  const [paths, setPaths] = useState({ source_dir: '', organized_dir: '', trash_dir: '', database_path: '', organization_pattern: 'year/month', library_folders: [] })
+  const [paths, setPaths] = useState({ source_dir: '', organized_dir: '', database_path: '', organization_pattern: 'year/month', library_folders: [], allow_library_modify: false })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
   const [newFolder, setNewFolder] = useState('')
@@ -20,9 +20,9 @@ export default function Settings() {
       await updateSettings({
         source_dir: paths.source_dir,
         organized_dir: paths.organized_dir,
-        trash_dir: paths.trash_dir,
         organization_pattern: paths.organization_pattern,
         library_folders: paths.library_folders,
+        allow_library_modify: paths.allow_library_modify,
       })
       setMessage({ type: 'success', text: 'Configurações salvas!' })
     } catch (e) {
@@ -121,21 +121,11 @@ export default function Settings() {
               className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </label>
-
-          <label className="block">
-            <span className="text-sm font-medium text-gray-700">Trash (lixeira)</span>
-            <input
-              type="text"
-              value={paths.trash_dir}
-              onChange={e => setPaths(p => ({ ...p, trash_dir: e.target.value }))}
-              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
-          </label>
         </div>
 
         <div className="flex items-center gap-2 pt-2 text-xs text-amber-600">
           <AlertTriangle className="w-4 h-4" />
-          <span>Premissa: arquivos NUNCA são deletados. Apenas movidos entre source → organized → trash.</span>
+          <span>Premissa: arquivos NUNCA são deletados. Movidos para .trash dentro de cada pasta.</span>
         </div>
 
         <button
@@ -224,6 +214,16 @@ export default function Settings() {
             <Plus className="w-4 h-4" /> Adicionar
           </button>
         </div>
+
+        <label className="flex items-center gap-3 pt-2">
+          <input
+            type="checkbox"
+            checked={paths.allow_library_modify || false}
+            onChange={e => setPaths(p => ({ ...p, allow_library_modify: e.target.checked }))}
+            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">Permitir modificar biblioteca (excluir, transcodificar arquivos nas pastas acima)</span>
+        </label>
 
         <button
           onClick={handleSave}

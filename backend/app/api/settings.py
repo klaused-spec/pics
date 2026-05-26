@@ -24,18 +24,18 @@ ENV_PATH = Path(__file__).parent.parent.parent / ".env"
 class PathsConfig(BaseModel):
     source_dir: str
     organized_dir: str
-    trash_dir: str
     organization_pattern: str = "year/month"
     library_folders: list[str] = []
+    allow_library_modify: bool = False
 
 
 class PathsResponse(BaseModel):
     source_dir: str
     organized_dir: str
-    trash_dir: str
     database_path: str
     organization_pattern: str
     library_folders: list[str]
+    allow_library_modify: bool
 
 
 @router.get("/paths", response_model=PathsResponse)
@@ -47,10 +47,10 @@ def get_paths():
     return PathsResponse(
         source_dir=settings.source_dir,
         organized_dir=settings.organized_dir,
-        trash_dir=settings.trash_dir,
         database_path=db_path,
         organization_pattern=settings.organization_pattern,
         library_folders=settings.library_folders,
+        allow_library_modify=settings.allow_library_modify,
     )
 
 
@@ -65,7 +65,6 @@ def update_paths(config: PathsConfig):
     all_dirs = [
         ("source_dir", config.source_dir),
         ("organized_dir", config.organized_dir),
-        ("trash_dir", config.trash_dir),
     ] + [(f"library_folders[{i}]", f) for i, f in enumerate(config.library_folders)]
 
     for name, path in all_dirs:
@@ -77,17 +76,17 @@ def update_paths(config: PathsConfig):
     # Atualiza em runtime
     settings.source_dir = config.source_dir
     settings.organized_dir = config.organized_dir
-    settings.trash_dir = config.trash_dir
     settings.organization_pattern = config.organization_pattern
     settings.library_folders = config.library_folders
+    settings.allow_library_modify = config.allow_library_modify
 
     # Persiste no .env
     env_data = {
         "SOURCE_DIR": config.source_dir,
         "ORGANIZED_DIR": config.organized_dir,
-        "TRASH_DIR": config.trash_dir,
         "ORGANIZATION_PATTERN": config.organization_pattern,
-        "LIBRARY_FOLDERS": ",".join(config.library_folders),
+        "LIBRARY_FOLDERS_RAW": ",".join(config.library_folders),
+        "ALLOW_LIBRARY_MODIFY": str(config.allow_library_modify).lower(),
     }
     _save_env(env_data)
 

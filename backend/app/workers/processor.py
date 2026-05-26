@@ -222,15 +222,24 @@ def run_sync() -> dict:
                     if found_path:
                         break
                 if found_path:
-                    # Moveu de pasta - atualiza path
+                    # Moveu de pasta - atualiza path (mantém faces, AI, tags, tudo)
                     media.organized_path = found_path
                     moved += 1
                     logger.info(f"Movido: {media.filename} -> {found_path}")
                 else:
-                    # Apagado - remove do banco (e faces associadas)
-                    _remove_media_and_faces(media, db)
-                    removed += 1
-                    logger.info(f"Removido: {media.filename}")
+                    # Não encontrado por nome - pode ser rename ou still moving
+                    # Não remove imediatamente, marca como missing para dar chance na próxima sync
+                    if not media.missing_since:
+                        media.missing_since = datetime.datetime.utcnow()
+                        logger.info(f"Não encontrado (aguardando): {media.filename}")
+                    elif (datetime.datetime.utcnow() - media.missing_since).total_seconds() > 86400:
+                        # Mais de 24h missing - remove do banco
+                        _remove_media_and_faces(media, db)
+                        removed += 1
+                        logger.info(f"Removido (missing >24h): {media.filename}")
+            elif media.missing_since:
+                # Arquivo reapareceu - limpa flag
+                media.missing_since = None
 
         db.commit()
 
@@ -240,8 +249,8 @@ def run_sync() -> dict:
             if not os.path.exists(organized_dir):
                 continue
             for root, _dirs, files in os.walk(organized_dir):
-                # Ignora pasta de thumbnails
-                if '.thumbnails' in root:
+                # Ignora pasta de thumbnails e trash
+                if '.thumbnails' in root or '.trash' in root:
                     continue
                 for filename in files:
                     # Ignora arquivos de transcodificação auxiliares
@@ -259,20 +268,30 @@ def run_sync() -> dict:
                     if existing:
                         continue
 
-                    # Verifica por filename (pode ter vindo de move)
-                    existing_by_name = db.query(Media).filter(
-                        Media.filename == filename,
-                        Media.is_duplicate == False,
-                    ).first()
-                    if existing_by_name:
-                        continue
-
                     # Arquivo novo - adiciona ao banco
                     try:
                         file_hash = compute_sha256(filepath)
                         # Verifica duplicata por hash
-                        dup = db.query(Media).filter(Media.sha256_hash == file_hash).first()
+                        dup = db.query(Media).filter(
+                            Media.sha256_hash == file_hash,
+                            Media.is_duplicate == False,
+                        ).first()
                         if dup:
+                            # Registra como duplicata no banco
+                            media = Media(
+                                original_path=filepath,
+                                organized_path=filepath,
+                                filename=filename,
+                                media_type=get_media_type(filepath),
+                                sha256_hash=file_hash,
+                                is_duplicate=True,
+                                duplicate_of_id=dup.id,
+                                date_taken=get_media_date(filepath),
+                                date_file=datetime.datetime.fromtimestamp(os.path.getmtime(filepath)),
+                                is_organized=True,
+                            )
+                            db.add(media)
+                            added += 1
                             continue
 
                         media_type = get_media_type(filepath)
@@ -331,7 +350,7 @@ def run_sync() -> dict:
 def _find_file_by_name(filename: str, base_dir: str) -> str | None:
     """Busca arquivo pelo nome nas subpastas do diretório organizado."""
     for root, _dirs, files in os.walk(base_dir):
-        if '.thumbnails' in root:
+        if '.thumbnails' in root or '.trash' in root:
             continue
         if filename in files:
             return os.path.join(root, filename)

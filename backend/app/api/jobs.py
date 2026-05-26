@@ -73,9 +73,10 @@ def start_face_detection(
 
 @router.post("/full-pipeline")
 def start_full_pipeline(background_tasks: BackgroundTasks):
-    """Executa pipeline completo: scan → organizar → IA → faces."""
+    """Executa pipeline completo: sync → scan → organizar → IA → faces."""
 
     async def full_pipeline():
+        run_sync()
         run_scan_and_organize()
         run_ai_processing()
         run_face_detection()

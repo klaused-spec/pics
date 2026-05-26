@@ -22,8 +22,26 @@ logger = logging.getLogger(__name__)
 
 
 def move_to_trash(filepath: str) -> str:
-    """Move arquivo para o trash ao invés de deletar. Retorna o novo caminho."""
-    trash_dir = settings.trash_dir
+    """Move arquivo para .trash dentro da pasta pai (organized ou library). Retorna o novo caminho."""
+    abs_path = os.path.abspath(filepath)
+
+    # Determina qual .trash usar baseado em onde o arquivo está
+    trash_dir = None
+    # Verifica library_folders
+    for folder in settings.library_folders:
+        abs_folder = os.path.abspath(folder)
+        if abs_path.startswith(abs_folder + os.sep):
+            trash_dir = os.path.join(folder, ".trash")
+            break
+    # Verifica organized_dir
+    if not trash_dir:
+        abs_organized = os.path.abspath(settings.organized_dir)
+        if abs_path.startswith(abs_organized + os.sep):
+            trash_dir = os.path.join(settings.organized_dir, ".trash")
+    # Fallback: .trash na pasta source
+    if not trash_dir:
+        trash_dir = os.path.join(settings.source_dir, ".trash")
+
     os.makedirs(trash_dir, exist_ok=True)
     filename = Path(filepath).name
     dest = os.path.join(trash_dir, filename)
@@ -246,6 +264,8 @@ def scan_source_directory(db: Session) -> list[str]:
         return new_files
 
     for root, _dirs, files in os.walk(source_dir):
+        if '.trash' in root or '.thumbnails' in root:
+            continue
         for filename in files:
             filepath = os.path.join(root, filename)
             ext = Path(filepath).suffix.lower()

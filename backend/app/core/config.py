@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pathlib import Path
+from typing import Any
 
 
 class Settings(BaseSettings):
@@ -13,20 +14,25 @@ class Settings(BaseSettings):
     # Diretórios
     source_dir: str = "/home/kkirner/src/pics/FOTOS/source"
     organized_dir: str = "/home/kkirner/src/pics/FOTOS/organized"
-    trash_dir: str = "/home/kkirner/src/pics/FOTOS/trash"
 
     # Organização
     # Padrão: "year/month" = YYYY/MM/  |  "year_month" = YYYY_MM[_descricao]/
     organization_pattern: str = "year/month"
     # Pastas de biblioteca adicionais (além de organized_dir) - separadas por vírgula no .env
-    library_folders: list[str] = []
+    library_folders_raw: str = ""
 
-    @field_validator("library_folders", mode="before")
-    @classmethod
-    def parse_library_folders(cls, v):
-        if isinstance(v, str):
-            return [f.strip() for f in v.split(",") if f.strip()]
-        return v
+    # Permitir modificar arquivos em library_folders (excluir, transcodificar)
+    allow_library_modify: bool = False
+
+    @property
+    def library_folders(self) -> list[str]:
+        if not self.library_folders_raw:
+            return []
+        return [f.strip() for f in self.library_folders_raw.split(",") if f.strip()]
+
+    @library_folders.setter
+    def library_folders(self, value: list[str]):
+        self.library_folders_raw = ",".join(value)
 
     # Banco de dados
     database_url: str = "sqlite:///./pics.db"

@@ -53,6 +53,7 @@ export const getStreamUrl = (id) => `/api/media/${id}/stream`
 export const forceTranscode = (id) => api.post(`/media/${id}/transcode`)
 export const getTranscodeStatus = (id) => api.get(`/media/${id}/transcode-status`)
 export const deleteOriginalVideo = (id) => api.delete(`/media/${id}/original`)
+export const deleteMedia = (id) => api.delete(`/media/${id}`)
 
 // Settings
 export const getSettings = () => api.get('/settings/paths')

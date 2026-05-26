@@ -78,6 +78,7 @@ class Media(Base):
     is_organized = Column(Boolean, default=False, index=True)
     is_duplicate = Column(Boolean, default=False, index=True)
     duplicate_of_id = Column(Integer, ForeignKey("media.id"), nullable=True)
+    missing_since = Column(DateTime, nullable=True)  # Quando o arquivo sumiu do disco
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

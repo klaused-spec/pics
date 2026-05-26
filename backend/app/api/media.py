@@ -19,6 +19,21 @@ from app.services.ai_vision import search_by_description
 router = APIRouter(prefix="/media", tags=["media"])
 
 
+def _is_in_library_folder(filepath: str) -> bool:
+    """Verifica se o arquivo está em uma das library_folders (não em organized_dir)."""
+    if not filepath:
+        return False
+    abs_path = os.path.abspath(filepath)
+    abs_organized = os.path.abspath(settings.organized_dir)
+    if abs_path.startswith(abs_organized + os.sep):
+        return False
+    for folder in settings.library_folders:
+        abs_folder = os.path.abspath(folder)
+        if abs_path.startswith(abs_folder + os.sep):
+            return True
+    return False
+
+
 @router.get("/")
 def list_media(
     page: int = Query(1, ge=1),
@@ -261,6 +276,10 @@ def force_transcode(media_id: int, db: Session = Depends(get_db)):
     if not filepath or not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
+    # Bloqueia transcodificação em library_folders se não autorizado
+    if _is_in_library_folder(filepath) and not settings.allow_library_modify:
+        raise HTTPException(status_code=403, detail="Modificação de arquivos em pastas de biblioteca não autorizada. Ative 'Permitir modificar biblioteca' nas configurações.")
+
     from app.services.transcoder import get_transcoded_path, is_transcoded, transcode_video
     import threading
 
@@ -311,21 +330,10 @@ def delete_original_video(media_id: int, db: Session = Depends(get_db)):
     original_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
     transcoded_size = os.path.getsize(transcoded_path)
 
-    # Mover original para FOTOS/trash
-    trash_dir = os.path.join(settings.source_dir, "..", "trash")
-    os.makedirs(trash_dir, exist_ok=True)
-    trash_path = os.path.join(trash_dir, Path(filepath).name)
-    # Evitar conflito de nomes
-    if os.path.exists(trash_path):
-        stem = Path(filepath).stem
-        ext = Path(filepath).suffix
-        i = 1
-        while os.path.exists(trash_path):
-            trash_path = os.path.join(trash_dir, f"{stem}_{i}{ext}")
-            i += 1
-
+    # Mover original para .trash local
+    from app.services.organizer import move_to_trash as _move_to_trash
     if os.path.exists(filepath):
-        shutil.move(filepath, trash_path)
+        _move_to_trash(filepath)
 
     # Atualizar banco para apontar para o transcoded
     if media.organized_path:
@@ -493,3 +501,69 @@ def _media_to_dict(media: Media, include_details: bool = False) -> dict:
         ]
 
     return result
+
+
+@router.delete("/{media_id}")
+def delete_media(media_id: int, db: Session = Depends(get_db)):
+    """
+    Exclui uma mídia: move o arquivo para trash e remove do banco.
+    Para arquivos em library_folders, requer allow_library_modify = true.
+    Para arquivos em organized_dir, sempre permitido (move para trash).
+    """
+    import shutil
+
+    media = db.query(Media).get(media_id)
+    if not media:
+        raise HTTPException(status_code=404, detail="Mídia não encontrada")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath:
+        raise HTTPException(status_code=404, detail="Caminho não encontrado")
+
+    # Verifica permissão para library_folders
+    if _is_in_library_folder(filepath) and not settings.allow_library_modify:
+        raise HTTPException(
+            status_code=403,
+            detail="Modificação de arquivos em pastas de biblioteca não autorizada. Ative 'Permitir modificar biblioteca' nas configurações."
+        )
+
+    # Move para .trash (nunca deleta)
+    # Cada pasta tem seu próprio .trash local
+    if _is_in_library_folder(filepath):
+        # Encontra qual library_folder contém o arquivo
+        abs_path = os.path.abspath(filepath)
+        trash_dir = None
+        for folder in settings.library_folders:
+            abs_folder = os.path.abspath(folder)
+            if abs_path.startswith(abs_folder + os.sep):
+                trash_dir = os.path.join(folder, ".trash")
+                break
+        if not trash_dir:
+            trash_dir = os.path.join(settings.organized_dir, ".trash")
+    else:
+        trash_dir = os.path.join(settings.organized_dir, ".trash")
+
+    os.makedirs(trash_dir, exist_ok=True)
+    trash_path = os.path.join(trash_dir, Path(filepath).name)
+
+    # Evitar conflito de nomes
+    if os.path.exists(trash_path):
+        stem = Path(filepath).stem
+        ext = Path(filepath).suffix
+        i = 1
+        while os.path.exists(trash_path):
+            trash_path = os.path.join(trash_dir, f"{stem}_{i}{ext}")
+            i += 1
+
+    if os.path.exists(filepath):
+        shutil.move(filepath, trash_path)
+
+    # Remove faces associadas
+    for face in media.faces:
+        db.delete(face)
+
+    # Remove do banco
+    db.delete(media)
+    db.commit()
+
+    return {"status": "ok", "message": f"Arquivo movido para trash: {Path(trash_path).name}"}
