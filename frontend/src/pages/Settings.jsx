@@ -108,7 +108,7 @@ export default function Settings() {
               type="text"
               value={paths.source_dir}
               onChange={e => setPaths(p => ({ ...p, source_dir: e.target.value }))}
-              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </label>
 
@@ -118,7 +118,7 @@ export default function Settings() {
               type="text"
               value={paths.organized_dir}
               onChange={e => setPaths(p => ({ ...p, organized_dir: e.target.value }))}
-              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </label>
 
@@ -128,7 +128,7 @@ export default function Settings() {
               type="text"
               value={paths.trash_dir}
               onChange={e => setPaths(p => ({ ...p, trash_dir: e.target.value }))}
-              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </label>
         </div>
@@ -159,7 +159,7 @@ export default function Settings() {
             <select
               value={paths.organization_pattern}
               onChange={e => setPaths(p => ({ ...p, organization_pattern: e.target.value }))}
-              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="year/month">Hierárquico: YYYY/MM/ (ex: 2021/05/foto.jpg)</option>
               <option value="year_month">Flat: YYYY_MM/ (ex: 2021_05/foto.jpg)</option>
@@ -195,7 +195,7 @@ export default function Settings() {
                   updated[i] = e.target.value
                   setPaths(p => ({ ...p, library_folders: updated }))
                 }}
-                className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
               <button
                 onClick={() => removeLibraryFolder(i)}
@@ -215,7 +215,7 @@ export default function Settings() {
             onChange={e => setNewFolder(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && addLibraryFolder()}
             placeholder="/mnt/g/fotos/pasta1"
-            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
           <button
             onClick={addLibraryFolder}
