@@ -302,6 +302,40 @@ def scan_source_directory(db: Session) -> list[str]:
     return new_files
 
 
+def scan_library_directories(db: Session) -> list[str]:
+    """
+    Escaneia organized_dir + library_folders e retorna arquivos novos (não no banco).
+    """
+    new_files = []
+    all_dirs = [settings.organized_dir] + settings.library_folders
+
+    for lib_dir in all_dirs:
+        if not os.path.exists(lib_dir):
+            continue
+        for root, _dirs, files in os.walk(lib_dir):
+            if '.thumbnails' in root or '.trash' in root:
+                continue
+            for filename in files:
+                if '_transcoded' in filename or filename.endswith(('.lock', '.progress')):
+                    continue
+                filepath = os.path.join(root, filename)
+                ext = Path(filepath).suffix.lower()
+                if ext not in settings.all_extensions:
+                    continue
+
+                # Verifica se já está no banco por path
+                existing = db.query(Media).filter(
+                    Media.organized_path == filepath
+                ).first()
+                if existing:
+                    continue
+
+                new_files.append(filepath)
+
+    logger.info(f"Encontrados {len(new_files)} arquivos novos em library/organized dirs")
+    return new_files
+
+
 def organize_file(filepath: str, db: Session) -> Optional[Media]:
     """
     Processa e organiza um único arquivo.

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.core.config import settings
 from app.models import Media, ProcessingJob, Face, media_faces
-from app.services.organizer import scan_source_directory, organize_file, get_media_type, get_media_date
+from app.services.organizer import scan_source_directory, scan_library_directories, organize_file, get_media_type, get_media_date, get_image_dimensions, get_video_metadata
 from app.services.duplicates import update_perceptual_hash, check_duplicate, compute_perceptual_hash
 from app.services.ai_vision import process_media_ai
 from app.services.face_recognition_service import process_faces_in_media, cluster_unknown_faces
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def run_scan_and_organize() -> int:
     """
-    Job principal: escaneia a pasta de origem e organiza arquivos novos.
+    Job principal: escaneia source + library_folders + organized e processa arquivos novos.
     """
     db = SessionLocal()
     try:
@@ -34,30 +34,108 @@ def run_scan_and_organize() -> int:
         db.add(job)
         db.commit()
 
-        # Escaneia novos arquivos
-        new_files = scan_source_directory(db)
-        job.total_items = len(new_files)
+        # Escaneia novos arquivos (source + library/organized)
+        source_files = scan_source_directory(db)
+        library_files = scan_library_directories(db)
+        total = len(source_files) + len(library_files)
+        job.total_items = total
         db.commit()
 
         processed = 0
-        for filepath in new_files:
+
+        # 1. Processa arquivos do source (organiza/move)
+        for filepath in source_files:
             try:
                 media = organize_file(filepath, db)
                 if media and not media.is_duplicate:
-                    # Calcula perceptual hash
                     update_perceptual_hash(media, db)
                 processed += 1
                 job.processed_items = processed
                 db.commit()
             except Exception as e:
                 logger.error(f"Erro ao processar {filepath}: {e}")
+                processed += 1
+                job.processed_items = processed
+                db.commit()
+                continue
+
+        # 2. Processa arquivos de library/organized (registra in-place)
+        for filepath in library_files:
+            try:
+                filename = os.path.basename(filepath)
+                file_hash = compute_sha256(filepath)
+
+                # Verifica duplicata por hash
+                dup = db.query(Media).filter(
+                    Media.sha256_hash == file_hash,
+                    Media.is_duplicate == False,
+                ).first()
+                if dup:
+                    media = Media(
+                        original_path=filepath,
+                        organized_path=filepath,
+                        filename=filename,
+                        media_type=get_media_type(filepath),
+                        sha256_hash=file_hash,
+                        is_duplicate=True,
+                        duplicate_of_id=dup.id,
+                        date_taken=get_media_date(filepath),
+                        date_file=datetime.datetime.fromtimestamp(os.path.getmtime(filepath)),
+                        is_organized=True,
+                    )
+                    db.add(media)
+                else:
+                    media_type = get_media_type(filepath)
+                    media_date = get_media_date(filepath)
+                    width, height, duration = None, None, None
+                    video_codec = None
+                    needs_transcode = False
+                    if media_type == "image":
+                        width, height = get_image_dimensions(filepath)
+                    elif media_type == "video":
+                        meta = get_video_metadata(filepath)
+                        width, height = meta.get("width"), meta.get("height")
+                        duration = meta.get("duration")
+                        video_codec = meta.get("codec")
+                        web_codecs = {"h264", "hevc", "vp8", "vp9", "av1"}
+                        if video_codec and video_codec not in web_codecs:
+                            needs_transcode = True
+
+                    media = Media(
+                        original_path=filepath,
+                        organized_path=filepath,
+                        filename=filename,
+                        media_type=media_type,
+                        sha256_hash=file_hash,
+                        date_taken=media_date,
+                        date_file=datetime.datetime.fromtimestamp(os.path.getmtime(filepath)),
+                        width=width,
+                        height=height,
+                        duration_seconds=duration,
+                        video_codec=video_codec,
+                        needs_transcode=needs_transcode,
+                        is_organized=True,
+                    )
+                    db.add(media)
+                    # Calcula perceptual hash
+                    db.flush()
+                    update_perceptual_hash(media, db)
+
+                processed += 1
+                job.processed_items = processed
+                db.commit()
+            except Exception as e:
+                logger.error(f"Erro ao adicionar {filepath}: {e}")
+                processed += 1
+                job.processed_items = processed
+                db.commit()
                 continue
 
         job.status = "completed"
         job.completed_at = datetime.datetime.utcnow()
         db.commit()
 
-        logger.info(f"Scan completo: {processed}/{len(new_files)} arquivos processados")
+        logger.info(f"Scan completo: {processed}/{total} arquivos processados")
         return processed
 
     except Exception as e:
