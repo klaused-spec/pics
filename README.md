@@ -146,6 +146,98 @@ pics/
 └── setup.sh            # Setup de desenvolvimento
 ```
 
+## Setup Real — Troubleshooting & Soluções (Ubuntu 26.04)
+
+Documentação dos problemas encontrados e soluções ao fazer setup em ambiente real:
+
+### Problema 1: Pacote `libgl1-mesa-glx` não disponível
+**Erro**: `E: Package 'libgl1-mesa-glx' has no installation candidate`
+
+**Solução**: 
+```bash
+# Instale as demais dependências sem libgl1-mesa-glx
+sudo apt install -y curl wget ffmpeg libjpeg-dev libpng-dev libglib2.0-0 build-essential software-properties-common
+
+# Para sistemas que precisam de OpenGL, instale alternativas:
+sudo apt install -y libgl1 libgl1-mesa-dri
+```
+
+### Problema 2: Python 3.12 não disponível (ou mediapipe/onnxruntime falham com 3.13+)
+**Erro**: Python 3.13+ trava mediapipe/onnxruntime na compilação
+
+**Solução**: Use **Python 3.11** (via deadsnakes) se 3.12 não estiver disponível:
+```bash
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv python3.11-dev
+
+# Depois crie o venv com 3.11
+cd backend
+python3.11 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Setup Automático Completo (sem nvm)
+Se `setup.sh` travar ou você preferir fazer manualmente:
+
+```bash
+# 1. Sistema & dependências
+sudo apt update && sudo apt install -y curl wget ffmpeg build-essential libpng-dev libjpeg-dev
+
+# 2. Python 3.11/3.12 (dependendo do que estiver disponível)
+sudo add-apt-repository -y ppa:deadsnakes/ppa && sudo apt update
+sudo apt install -y python3.11 python3.11-venv python3.11-dev  # ou python3.12
+
+# 3. Node.js 20 (via NodeSource, sem nvm)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+sudo apt install -y nodejs
+
+# 4. Backend
+cd backend
+python3.11 -m venv venv  # ou python3.12
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 5. Frontend
+cd ../frontend
+npm install
+
+# 6. Modelos ONNX
+cd ..
+chmod +x download-models.sh
+./download-models.sh
+
+# 7. Configuração .env
+cp backend/.env.example backend/.env
+# Edite backend/.env com seus paths e chaves Azure
+nano backend/.env
+
+# 8. Iniciar (2 terminais)
+# Terminal 1:
+cd backend && source venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Terminal 2:
+cd frontend && npm run dev
+```
+
+### Verificação Pós-Setup
+```bash
+# Backend venv criado?
+ls -la backend/venv/bin/python
+
+# Node modules instalados?
+ls -la frontend/node_modules | wc -l
+
+# Modelos baixados?
+ls -la backend/models/*.onnx
+
+# .env criado?
+cat backend/.env | grep SOURCE_DIR
+```
+
 ## Notas para WSL
 
 - Para acessar fotos do Windows: monte via `/mnt/c/Users/SeuUsuario/...`
@@ -156,3 +248,37 @@ pics/
   ```
 - O SQLite funciona bem para uso pessoal; o banco fica em `backend/pics.db`
 - Modelos ONNX (~330MB) ficam em `backend/models/` e NÃO são versionados no git
+
+## Contribuir & Deploy
+
+### Clonar & Fazer Setup
+```bash
+git clone https://github.com/klaused-spec/pics.git
+cd pics
+./setup.sh  # ou use os passos manuais acima se tiver problemas
+```
+
+### Fazer Commit
+```bash
+git add .
+git commit -m "docs: adiciona troubleshooting setup real (Python 3.11, libgl1-mesa-glx)"
+git push origin main
+```
+
+### Variáveis de Ambiente Obrigatórias
+Antes de rodar, crie `backend/.env`:
+```env
+SOURCE_DIR=/caminho/para/fotos/origem
+ORGANIZED_DIR=/caminho/para/fotos/organizadas
+TRASH_DIR=/caminho/para/fotos/.trash
+DATABASE_URL=sqlite:///./pics.db
+HOST=0.0.0.0
+PORT=8000
+```
+
+Opcionais (para IA):
+```env
+AZURE_OPENAI_ENDPOINT=https://seu-recurso.openai.azure.com/
+AZURE_OPENAI_KEY=sua-chave-aqui
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+```
