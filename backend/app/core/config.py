@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     batch_size: int = 10
     max_concurrent_ai_calls: int = 3
     scan_interval_minutes: int = 30
+    scan_workers: int = 4  # Número de threads paralelas para scan (SHA256, metadados, pHash)
 
     # Extensões suportadas
     image_extensions: list[str] = [

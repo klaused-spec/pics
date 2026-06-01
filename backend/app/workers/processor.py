@@ -6,6 +6,7 @@ import os
 import logging
 import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -18,6 +19,54 @@ from app.services.face_recognition_service import process_faces_in_media, cluste
 from app.services.organizer import compute_sha256
 
 logger = logging.getLogger(__name__)
+
+
+def _preprocess_library_file(filepath: str) -> dict:
+    """
+    Pré-processa um arquivo de biblioteca em paralelo (sem acesso ao DB).
+    Extrai SHA256, metadados e perceptual hash.
+    """
+    try:
+        file_hash = compute_sha256(filepath)
+        filename = os.path.basename(filepath)
+        media_type = get_media_type(filepath)
+        media_date = get_media_date(filepath)
+        date_file = datetime.datetime.fromtimestamp(os.path.getmtime(filepath))
+
+        width, height, duration = None, None, None
+        video_codec = None
+        needs_transcode = False
+        phash = None
+
+        if media_type == "image":
+            width, height = get_image_dimensions(filepath)
+            phash = compute_perceptual_hash(filepath)
+        elif media_type == "video":
+            meta = get_video_metadata(filepath)
+            width, height = meta.get("width"), meta.get("height")
+            duration = meta.get("duration")
+            video_codec = meta.get("codec")
+            web_codecs = {"h264", "hevc", "vp8", "vp9", "av1"}
+            if video_codec and video_codec not in web_codecs:
+                needs_transcode = True
+
+        return {
+            "filepath": filepath,
+            "filename": filename,
+            "file_hash": file_hash,
+            "media_type": media_type,
+            "media_date": media_date,
+            "date_file": date_file,
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "video_codec": video_codec,
+            "needs_transcode": needs_transcode,
+            "phash": phash,
+            "error": None,
+        }
+    except Exception as e:
+        return {"filepath": filepath, "error": str(e)}
 
 
 def run_scan_and_organize() -> int:
@@ -59,77 +108,80 @@ def run_scan_and_organize() -> int:
                 db.commit()
                 continue
 
-        # 2. Processa arquivos de library/organized (registra in-place)
-        for filepath in library_files:
-            try:
-                filename = os.path.basename(filepath)
-                file_hash = compute_sha256(filepath)
+        # 2. Processa arquivos de library/organized em paralelo
+        workers = settings.scan_workers
+        logger.info(f"Processando {len(library_files)} arquivos de library com {workers} workers")
 
-                # Verifica duplicata por hash
-                dup = db.query(Media).filter(
-                    Media.sha256_hash == file_hash,
-                    Media.is_duplicate == False,
-                ).first()
-                if dup:
-                    media = Media(
-                        original_path=filepath,
-                        organized_path=filepath,
-                        filename=filename,
-                        media_type=get_media_type(filepath),
-                        sha256_hash=file_hash,
-                        is_duplicate=True,
-                        duplicate_of_id=dup.id,
-                        date_taken=get_media_date(filepath),
-                        date_file=datetime.datetime.fromtimestamp(os.path.getmtime(filepath)),
-                        is_organized=True,
-                    )
-                    db.add(media)
-                else:
-                    media_type = get_media_type(filepath)
-                    media_date = get_media_date(filepath)
-                    width, height, duration = None, None, None
-                    video_codec = None
-                    needs_transcode = False
-                    if media_type == "image":
-                        width, height = get_image_dimensions(filepath)
-                    elif media_type == "video":
-                        meta = get_video_metadata(filepath)
-                        width, height = meta.get("width"), meta.get("height")
-                        duration = meta.get("duration")
-                        video_codec = meta.get("codec")
-                        web_codecs = {"h264", "hevc", "vp8", "vp9", "av1"}
-                        if video_codec and video_codec not in web_codecs:
-                            needs_transcode = True
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_preprocess_library_file, fp): fp for fp in library_files}
 
-                    media = Media(
-                        original_path=filepath,
-                        organized_path=filepath,
-                        filename=filename,
-                        media_type=media_type,
-                        sha256_hash=file_hash,
-                        date_taken=media_date,
-                        date_file=datetime.datetime.fromtimestamp(os.path.getmtime(filepath)),
-                        width=width,
-                        height=height,
-                        duration_seconds=duration,
-                        video_codec=video_codec,
-                        needs_transcode=needs_transcode,
-                        is_organized=True,
-                    )
-                    db.add(media)
-                    # Calcula perceptual hash
-                    db.flush()
-                    update_perceptual_hash(media, db)
+            for future in as_completed(futures):
+                result = future.result()
+                filepath = result["filepath"]
 
-                processed += 1
-                job.processed_items = processed
-                db.commit()
-            except Exception as e:
-                logger.error(f"Erro ao adicionar {filepath}: {e}")
-                processed += 1
-                job.processed_items = processed
-                db.commit()
-                continue
+                if result.get("error"):
+                    logger.error(f"Erro ao pré-processar {filepath}: {result['error']}")
+                    processed += 1
+                    job.processed_items = processed
+                    db.commit()
+                    continue
+
+                try:
+                    file_hash = result["file_hash"]
+
+                    # Verifica duplicata por hash (requer DB)
+                    dup = db.query(Media).filter(
+                        Media.sha256_hash == file_hash,
+                        Media.is_duplicate == False,
+                    ).first()
+
+                    if dup:
+                        media = Media(
+                            original_path=filepath,
+                            organized_path=filepath,
+                            filename=result["filename"],
+                            media_type=result["media_type"],
+                            sha256_hash=file_hash,
+                            is_duplicate=True,
+                            duplicate_of_id=dup.id,
+                            date_taken=result["media_date"],
+                            date_file=result["date_file"],
+                            is_organized=True,
+                        )
+                        db.add(media)
+                    else:
+                        media = Media(
+                            original_path=filepath,
+                            organized_path=filepath,
+                            filename=result["filename"],
+                            media_type=result["media_type"],
+                            sha256_hash=file_hash,
+                            date_taken=result["media_date"],
+                            date_file=result["date_file"],
+                            width=result["width"],
+                            height=result["height"],
+                            duration_seconds=result["duration"],
+                            video_codec=result["video_codec"],
+                            needs_transcode=result["needs_transcode"],
+                            is_organized=True,
+                        )
+                        db.add(media)
+                        db.flush()
+                        # Atribui perceptual hash pré-calculado
+                        if result["phash"]:
+                            media.perceptual_hash = result["phash"]
+
+                    processed += 1
+                    job.processed_items = processed
+                    if processed % 50 == 0:
+                        db.commit()
+                except Exception as e:
+                    logger.error(f"Erro ao adicionar {filepath}: {e}")
+                    db.rollback()
+                    processed += 1
+                    job.processed_items = processed
+
+        db.commit()
 
         job.status = "completed"
         job.completed_at = datetime.datetime.utcnow()
