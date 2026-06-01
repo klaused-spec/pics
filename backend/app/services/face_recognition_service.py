@@ -289,11 +289,24 @@ def find_matching_person(encoding: np.ndarray, db: Session) -> Optional[tuple[Pe
 def process_faces_in_media(media: Media, db: Session) -> list[Face]:
     """
     Detecta e processa rostos em uma mídia.
+    Reutiliza faces existentes por SHA256 se já foram detectadas antes.
     """
     filepath = media.organized_path or media.original_path
 
     if media.media_type != "image":
         return []
+
+    # Tenta reutilizar faces existentes por hash (sobrevive a re-indexações)
+    if media.sha256_hash:
+        existing_faces = db.query(Face).filter(Face.media_sha256 == media.sha256_hash).all()
+        if existing_faces:
+            # Reassocia as faces existentes a esta mídia
+            for face in existing_faces:
+                if media not in face.media_items:
+                    face.media_items.append(media)
+            db.commit()
+            logger.info(f"Faces (cache): {len(existing_faces)} rostos reutilizados para {filepath}")
+            return existing_faces
 
     detected = detect_faces_in_image(filepath)
     if not detected:

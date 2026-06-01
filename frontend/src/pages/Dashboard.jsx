@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getStats, getJobs, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startSync } from '../api'
-import { Image, Video, Users, Brain, RefreshCw, Play, AlertCircle } from 'lucide-react'
+import { getStats, getJobs, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startSync, startPurgeMissing } from '../api'
+import { Image, Video, Users, Brain, RefreshCw, Play, AlertCircle, Trash2 } from 'lucide-react'
 
 function Dashboard() {
   const [stats, setStats] = useState(null)
@@ -106,6 +106,13 @@ function Dashboard() {
             label="Sincronizar"
             description="Atualiza movidos/apagados"
             color="gray"
+          />
+          <ActionButton
+            onClick={() => { if (confirm('Remover do banco todos os arquivos marcados como missing?')) handleAction(startPurgeMissing) }}
+            icon={Trash2}
+            label="Limpar Missing"
+            description="Remove arquivos não encontrados"
+            color="red"
           />
         </div>
       </div>

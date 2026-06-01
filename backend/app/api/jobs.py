@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models import ProcessingJob
-from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync
+from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync, run_purge_missing
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -91,3 +91,14 @@ def start_sync(background_tasks: BackgroundTasks):
     """Sincroniza banco com pastas: detecta movidos, apagados e novos."""
     background_tasks.add_task(run_sync)
     return {"message": "Sync iniciado em background"}
+
+
+@router.post("/purge-missing")
+def start_purge_missing(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Remove do banco todos os arquivos marcados como missing (não encontrados em disco)."""
+    from app.models.models import Media
+    missing_count = db.query(Media).filter(Media.missing_since.isnot(None)).count()
+    if missing_count == 0:
+        return {"message": "Nenhum arquivo missing para remover", "missing_count": 0}
+    background_tasks.add_task(run_purge_missing)
+    return {"message": f"Purge iniciado: {missing_count} arquivos missing serão removidos", "missing_count": missing_count}

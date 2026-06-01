@@ -302,16 +302,10 @@ def run_sync() -> dict:
                     moved += 1
                     logger.info(f"Movido: {media.filename} -> {found_path}")
                 else:
-                    # Não encontrado por nome - pode ser rename ou still moving
-                    # Não remove imediatamente, marca como missing para dar chance na próxima sync
+                    # Não encontrado por nome - marca como missing (limpeza só manual)
                     if not media.missing_since:
                         media.missing_since = datetime.datetime.utcnow()
-                        logger.info(f"Não encontrado (aguardando): {media.filename}")
-                    elif (datetime.datetime.utcnow() - media.missing_since).total_seconds() > 86400:
-                        # Mais de 24h missing - remove do banco
-                        _remove_media_and_faces(media, db)
-                        removed += 1
-                        logger.info(f"Removido (missing >24h): {media.filename}")
+                        logger.info(f"Não encontrado (marcado missing): {media.filename}")
             elif media.missing_since:
                 # Arquivo reapareceu - limpa flag
                 media.missing_since = None
@@ -441,3 +435,26 @@ def _remove_media_and_faces(media: Media, db: Session):
         if not face.media_items:
             db.delete(face)
     db.delete(media)
+
+
+def run_purge_missing() -> dict:
+    """
+    Remove do banco todos os registros marcados como missing (arquivo não encontrado em disco).
+    Essa operação é manual - só roda quando o usuário clica o botão.
+    """
+    db = SessionLocal()
+    try:
+        missing_media = db.query(Media).filter(Media.missing_since.isnot(None)).all()
+        removed = 0
+        for media in missing_media:
+            _remove_media_and_faces(media, db)
+            removed += 1
+        db.commit()
+        logger.info(f"Purge missing: {removed} registros removidos")
+        return {"removed": removed}
+    except Exception as e:
+        logger.error(f"Erro no purge missing: {e}")
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()

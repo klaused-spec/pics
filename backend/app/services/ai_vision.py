@@ -131,8 +131,30 @@ def analyze_video_thumbnail(filepath: str) -> Optional[dict]:
 def process_media_ai(media: Media, db: Session) -> None:
     """
     Processa uma mídia com Azure OpenAI e atualiza o banco de dados.
+    Reutiliza cache por SHA256 se já foi processado antes.
     """
     filepath = media.organized_path or media.original_path
+
+    # Tenta reutilizar do cache (sobrevive a re-indexações)
+    if media.sha256_hash:
+        cached = db.query(AiCache).filter(AiCache.sha256_hash == media.sha256_hash).first()
+        if cached and cached.ai_description:
+            media.ai_description = cached.ai_description
+            media.ai_location = cached.ai_location
+            media.ai_scene_type = cached.ai_scene_type
+            media.ai_objects = cached.ai_objects
+            media.ai_processed = True
+            media.ai_processed_at = cached.processed_at or datetime.datetime.utcnow()
+
+            # Recria tags a partir do cache
+            _apply_tags_from_result(media, {
+                "scene_type": cached.ai_scene_type,
+                "location": cached.ai_location,
+                "objects": cached.ai_objects or [],
+            }, db)
+            db.commit()
+            logger.info(f"IA (cache): {filepath}")
+            return
 
     if media.media_type == "image":
         result = analyze_image(filepath)
@@ -165,6 +187,14 @@ def process_media_ai(media: Media, db: Session) -> None:
         cached.processed_at = media.ai_processed_at
 
     # Cria/associa tags
+    _apply_tags_from_result(media, result, db)
+
+    db.commit()
+    logger.info(f"IA processou: {filepath} - {media.ai_description[:80]}...")
+
+
+def _apply_tags_from_result(media: Media, result: dict, db: Session):
+    """Cria/associa tags a partir do resultado de IA."""
     tag_sources = []
     if result.get("scene_type"):
         tag_sources.append(("scene", result["scene_type"]))
@@ -185,9 +215,6 @@ def process_media_ai(media: Media, db: Session) -> None:
             db.flush()
         if tag not in media.tags:
             media.tags.append(tag)
-
-    db.commit()
-    logger.info(f"IA processou: {filepath} - {media.ai_description[:80]}...")
 
 
 def search_by_description(query: str, db: Session, limit: int = 50) -> list[Media]:

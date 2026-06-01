@@ -37,6 +37,7 @@ export const startAiProcessing = () => api.post('/jobs/ai-process', null, { para
 export const startFaceDetection = () => api.post('/jobs/face-detect', null, { params: { batch_size: 99999 } })
 export const startFullPipeline = () => api.post('/jobs/full-pipeline')
 export const startSync = () => api.post('/jobs/sync')
+export const startPurgeMissing = () => api.post('/jobs/purge-missing')
 
 // Álbuns
 export const getAlbums = () => api.get('/albums/')
