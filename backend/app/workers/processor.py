@@ -108,80 +108,83 @@ def run_scan_and_organize() -> int:
                 db.commit()
                 continue
 
-        # 2. Processa arquivos de library/organized em paralelo
+        # 2. Processa arquivos de library/organized em paralelo (em batches para controlar memória)
         workers = settings.scan_workers
-        logger.info(f"Processando {len(library_files)} arquivos de library com {workers} workers")
+        batch_size = 200  # Processa N arquivos por vez para não estourar memória
+        logger.info(f"Processando {len(library_files)} arquivos de library com {workers} workers (batches de {batch_size})")
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_preprocess_library_file, fp): fp for fp in library_files}
+        for batch_start in range(0, len(library_files), batch_size):
+            batch = library_files[batch_start:batch_start + batch_size]
 
-            for future in as_completed(futures):
-                result = future.result()
-                filepath = result["filepath"]
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(_preprocess_library_file, fp): fp for fp in batch}
 
-                if result.get("error"):
-                    logger.error(f"Erro ao pré-processar {filepath}: {result['error']}")
-                    processed += 1
-                    job.processed_items = processed
-                    db.commit()
-                    continue
+                for future in as_completed(futures):
+                    result = future.result()
+                    filepath = result["filepath"]
 
-                try:
-                    file_hash = result["file_hash"]
+                    if result.get("error"):
+                        logger.error(f"Erro ao pré-processar {filepath}: {result['error']}")
+                        processed += 1
+                        job.processed_items = processed
+                        continue
 
-                    # Verifica duplicata por hash (requer DB)
-                    dup = db.query(Media).filter(
-                        Media.sha256_hash == file_hash,
-                        Media.is_duplicate == False,
-                    ).first()
+                    try:
+                        file_hash = result["file_hash"]
 
-                    if dup:
-                        media = Media(
-                            original_path=filepath,
-                            organized_path=filepath,
-                            filename=result["filename"],
-                            media_type=result["media_type"],
-                            sha256_hash=file_hash,
-                            is_duplicate=True,
-                            duplicate_of_id=dup.id,
-                            date_taken=result["media_date"],
-                            date_file=result["date_file"],
-                            is_organized=True,
-                        )
-                        db.add(media)
-                    else:
-                        media = Media(
-                            original_path=filepath,
-                            organized_path=filepath,
-                            filename=result["filename"],
-                            media_type=result["media_type"],
-                            sha256_hash=file_hash,
-                            date_taken=result["media_date"],
-                            date_file=result["date_file"],
-                            width=result["width"],
-                            height=result["height"],
-                            duration_seconds=result["duration"],
-                            video_codec=result["video_codec"],
-                            needs_transcode=result["needs_transcode"],
-                            is_organized=True,
-                        )
-                        db.add(media)
-                        db.flush()
-                        # Atribui perceptual hash pré-calculado
-                        if result["phash"]:
-                            media.perceptual_hash = result["phash"]
+                        # Verifica duplicata por hash (requer DB)
+                        dup = db.query(Media).filter(
+                            Media.sha256_hash == file_hash,
+                            Media.is_duplicate == False,
+                        ).first()
 
-                    processed += 1
-                    job.processed_items = processed
-                    if processed % 50 == 0:
-                        db.commit()
-                except Exception as e:
-                    logger.error(f"Erro ao adicionar {filepath}: {e}")
-                    db.rollback()
-                    processed += 1
-                    job.processed_items = processed
+                        if dup:
+                            media = Media(
+                                original_path=filepath,
+                                organized_path=filepath,
+                                filename=result["filename"],
+                                media_type=result["media_type"],
+                                sha256_hash=file_hash,
+                                is_duplicate=True,
+                                duplicate_of_id=dup.id,
+                                date_taken=result["media_date"],
+                                date_file=result["date_file"],
+                                is_organized=True,
+                            )
+                            db.add(media)
+                        else:
+                            media = Media(
+                                original_path=filepath,
+                                organized_path=filepath,
+                                filename=result["filename"],
+                                media_type=result["media_type"],
+                                sha256_hash=file_hash,
+                                date_taken=result["media_date"],
+                                date_file=result["date_file"],
+                                width=result["width"],
+                                height=result["height"],
+                                duration_seconds=result["duration"],
+                                video_codec=result["video_codec"],
+                                needs_transcode=result["needs_transcode"],
+                                is_organized=True,
+                            )
+                            db.add(media)
+                            db.flush()
+                            # Atribui perceptual hash pré-calculado
+                            if result["phash"]:
+                                media.perceptual_hash = result["phash"]
 
-        db.commit()
+                        processed += 1
+                        job.processed_items = processed
+                    except Exception as e:
+                        logger.error(f"Erro ao adicionar {filepath}: {e}")
+                        db.rollback()
+                        processed += 1
+                        job.processed_items = processed
+
+            # Commit ao final de cada batch e libera memória da sessão
+            db.commit()
+            logger.info(f"Batch concluído: {processed}/{total} processados")
 
         job.status = "completed"
         job.completed_at = datetime.datetime.utcnow()
