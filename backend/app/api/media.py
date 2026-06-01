@@ -136,6 +136,7 @@ def get_stats(db: Session = Depends(get_db)):
     ai_processed = db.query(Media).filter(Media.ai_processed == True).count()
     persons = db.query(Person).count()
     faces = db.query(Face).count()
+    missing = db.query(Media).filter(Media.missing_since.isnot(None)).count()
 
     return {
         "total_media": total,
@@ -145,6 +146,7 @@ def get_stats(db: Session = Depends(get_db)):
         "ai_processed": ai_processed,
         "persons": persons,
         "faces_detected": faces,
+        "missing_files": missing,
     }
 
 

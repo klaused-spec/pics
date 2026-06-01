@@ -65,6 +65,7 @@ function Dashboard() {
           <StatCard icon={Brain} label="IA Processado" value={stats.ai_processed} color="yellow" />
           <StatCard icon={AlertCircle} label="Duplicatas" value={stats.duplicates_found} color="red" onClick={() => navigate('/duplicates')} />
           <StatCard icon={Users} label="Rostos" value={stats.faces_detected} color="cyan" onClick={() => navigate('/persons/review')} />
+          <StatCard icon={AlertCircle} label="Missing" value={stats.missing_files} color="red" />
         </div>
       )}
 
@@ -139,6 +140,7 @@ function Dashboard() {
                       job.status === 'completed' ? 'bg-green-600/30 text-green-400' :
                       job.status === 'running' ? 'bg-blue-600/30 text-blue-400' :
                       job.status === 'failed' ? 'bg-red-600/30 text-red-400' :
+                      job.status === 'interrupted' ? 'bg-yellow-600/30 text-yellow-400' :
                       'bg-gray-600/30 text-gray-400'
                     }`}>
                       {job.status}
@@ -194,6 +196,8 @@ function ActionButton({ onClick, icon: Icon, label, description, color }) {
     green: 'bg-green-600 hover:bg-green-700',
     yellow: 'bg-yellow-600 hover:bg-yellow-700',
     purple: 'bg-purple-600 hover:bg-purple-700',
+    gray: 'bg-gray-600 hover:bg-gray-700',
+    red: 'bg-red-600 hover:bg-red-700',
   }
 
   return (

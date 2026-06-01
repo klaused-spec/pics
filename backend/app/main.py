@@ -2,6 +2,7 @@
 PICS - Personal Image & Content System
 Aplicação principal FastAPI.
 """
+import datetime
 import logging
 from contextlib import asynccontextmanager
 
@@ -32,6 +33,22 @@ async def lifespan(app: FastAPI):
     restore_env_from_db()
     init_db()
     backup_env_to_db()
+
+    # Marca jobs "running" órfãos como "interrupted" (crash/restart anterior)
+    from app.core.database import SessionLocal
+    from app.models import ProcessingJob
+    db = SessionLocal()
+    try:
+        orphan_jobs = db.query(ProcessingJob).filter(ProcessingJob.status == "running").all()
+        for j in orphan_jobs:
+            j.status = "interrupted"
+            j.error_message = "Interrompido por restart do servidor"
+            j.completed_at = datetime.datetime.utcnow()
+        if orphan_jobs:
+            db.commit()
+            logger.info(f"Marcados {len(orphan_jobs)} jobs órfãos como interrupted")
+    finally:
+        db.close()
 
     # Agenda scan periódico
     scheduler.add_job(
