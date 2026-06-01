@@ -92,6 +92,57 @@ No modo flat, pastas como `2021_05/` e `2021_05_aniversario_fulano/` coexistem *
 4. Ajuste os paths se o ponto de montagem mudou
 5. Tudo funciona: faces, descrições IA, albums — tudo linkado por SHA256
 
+## Acesso pela LAN (outro PC na rede)
+
+Como o frontend roda dentro do WSL2, a rede interna (172.x.x.x) não é acessível diretamente pela LAN. Para expor a porta 5173:
+
+### 1. Port Forwarding no Windows (PowerShell admin)
+
+```powershell
+# Descubra o IP do WSL2
+wsl hostname -I
+# Ex: 172.22.133.241
+
+# Crie o port forwarding
+netsh interface portproxy add v4tov4 listenport=5173 listenaddress=0.0.0.0 connectport=5173 connectaddress=172.22.133.241
+```
+
+### 2. Regra de Firewall (PowerShell admin)
+
+```powershell
+New-NetFirewallRule -DisplayName "Vite Dev Server" -Direction Inbound -LocalPort 5173 -Protocol TCP -Action Allow
+```
+
+### 3. Perfil de Rede
+
+Se a rede estiver como "Pública", conexões de entrada são bloqueadas. Mude para Private:
+
+```powershell
+# Ver perfil atual
+Get-NetConnectionProfile
+
+# Mudar para Private (ajuste InterfaceAlias conforme sua interface)
+Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private
+```
+
+### 4. Verificar
+
+```powershell
+# Confirmar port forwarding
+netsh interface portproxy show all
+
+# Testar de outro PC
+Test-NetConnection -ComputerName 192.168.x.x -Port 5173
+```
+
+Acesse de outro dispositivo: **http://\<IP-do-PC-Windows\>:5173**
+
+> **Nota:** O IP do WSL2 pode mudar ao reiniciar. Se parar de funcionar, atualize o connectaddress:
+> ```powershell
+> netsh interface portproxy delete v4tov4 listenport=5173 listenaddress=0.0.0.0
+> netsh interface portproxy add v4tov4 listenport=5173 listenaddress=0.0.0.0 connectport=5173 connectaddress=<novo-ip-wsl>
+> ```
+
 ## Pré-requisitos
 
 - **WSL2** (Ubuntu 22.04+) ou Linux nativo
