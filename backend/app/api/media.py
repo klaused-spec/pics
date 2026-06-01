@@ -429,6 +429,10 @@ def delete_original_video(media_id: int, db: Session = Depends(get_db)):
     if not filepath:
         raise HTTPException(status_code=404, detail="Caminho não encontrado")
 
+    # Bloqueia em library_folders se não autorizado
+    if _is_in_library_folder(filepath) and not settings.allow_library_modify:
+        raise HTTPException(status_code=403, detail="Modificação de arquivos em pastas de biblioteca não autorizada. Ative 'Permitir modificar biblioteca' nas configurações.")
+
     from app.services.transcoder import get_transcoded_path, is_transcoded
     import shutil
 
@@ -436,6 +440,9 @@ def delete_original_video(media_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Vídeo ainda não foi transcodificado")
 
     transcoded_path = get_transcoded_path(filepath)
+    if not os.path.exists(transcoded_path):
+        raise HTTPException(status_code=400, detail="Arquivo transcoded não encontrado no disco")
+
     original_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
     transcoded_size = os.path.getsize(transcoded_path)
 
@@ -446,14 +453,18 @@ def delete_original_video(media_id: int, db: Session = Depends(get_db)):
         trash_path = _move_to_trash(filepath)
 
     # Atualizar banco para apontar para o transcoded
-    if media.organized_path:
-        media.organized_path = transcoded_path
-    else:
-        media.original_path = transcoded_path
-    media.filename = Path(transcoded_path).name
-    media.needs_transcode = False
-    media.video_codec = "h264"
-    db.commit()
+    try:
+        if media.organized_path:
+            media.organized_path = transcoded_path
+        else:
+            media.original_path = transcoded_path
+        media.filename = Path(transcoded_path).name
+        media.needs_transcode = False
+        media.video_codec = "h264"
+        db.commit()
+    except Exception as e:
+        logger.error(f"Erro ao atualizar DB após delete original: {e}")
+        db.rollback()
 
     saved_mb = (original_size - transcoded_size) / 1024 / 1024
     return {
