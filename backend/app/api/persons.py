@@ -108,14 +108,24 @@ def delete_person(person_id: int, db: Session = Depends(get_db)):
     if not person:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada")
 
-    # Desassocia rostos
-    for face in person.faces:
-        face.person_id = None
-        face.is_confirmed = False
-    db.delete(person)
-    db.commit()
-
-    return {"message": "Pessoa removida"}
+    try:
+        # Desassocia rostos
+        faces_to_update = list(person.faces)
+        for face in faces_to_update:
+            face.person_id = None
+            face.is_confirmed = False
+        
+        # Delete person
+        db.delete(person)
+        db.commit()
+        
+        return {
+            "message": "Pessoa removida com sucesso",
+            "faces_unlinked": len(faces_to_update)
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Erro ao deletar pessoa: {str(e)}")
 
 
 @router.get("/{person_id}/media")

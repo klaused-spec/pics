@@ -12,13 +12,50 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.core.config import settings
 from app.models import Media, ProcessingJob, Face, media_faces
-from app.services.organizer import scan_source_directory, scan_library_directories, organize_file, get_media_type, get_media_date, get_image_dimensions, get_video_metadata
+from app.services.organizer import scan_source_directory, scan_library_directories, organize_file, cleanup_source_trash, get_media_type, get_media_date, get_image_dimensions, get_video_metadata
 from app.services.duplicates import update_perceptual_hash, check_duplicate, compute_perceptual_hash
 from app.services.ai_vision import process_media_ai
 from app.services.face_recognition_service import process_faces_in_media, cluster_unknown_faces
 from app.services.organizer import compute_sha256
 
 logger = logging.getLogger(__name__)
+
+
+def _create_job(job_type: str):
+    """Cria um registro de job em background."""
+    db = SessionLocal()
+    try:
+        job = ProcessingJob(
+            job_type=job_type,
+            status="running",
+            started_at=datetime.datetime.utcnow(),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job.id
+    finally:
+        db.close()
+
+
+def _update_job(job_id: int, status: str, processed_items: int = None, total_items: int = None, error_message: str = None):
+    db = SessionLocal()
+    try:
+        job = db.query(ProcessingJob).get(job_id)
+        if not job:
+            return
+        job.status = status
+        if processed_items is not None:
+            job.processed_items = processed_items
+        if total_items is not None:
+            job.total_items = total_items
+        if error_message is not None:
+            job.error_message = error_message
+        if status in ("completed", "failed"):
+            job.completed_at = datetime.datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
 
 
 def _preprocess_library_file(filepath: str) -> dict:
@@ -186,6 +223,11 @@ def run_scan_and_organize() -> int:
             db.commit()
             logger.info(f"Batch concluído: {processed}/{total} processados")
 
+        try:
+            cleanup_source_trash()
+        except Exception as e:
+            logger.error(f"Erro ao limpar source .trash: {e}")
+
         job.status = "completed"
         job.completed_at = datetime.datetime.utcnow()
         db.commit()
@@ -336,10 +378,9 @@ def run_sync() -> dict:
         moved = 0
         added = 0
 
-        # 1. Verifica arquivos que sumiram ou mudaram de lugar
+        # 1. Verifica arquivos que sumiram ou mudaram de lugar (INCLUI DUPLICATAS também!)
         all_media = db.query(Media).filter(
             Media.is_organized == True,
-            Media.is_duplicate == False,
         ).all()
 
         for media in all_media:
@@ -459,13 +500,101 @@ def run_sync() -> dict:
                         continue
 
         db.commit()
-        result = {"removed": removed, "moved": moved, "added": added}
+        result = {
+            "removed": removed,
+            "moved": moved,
+            "added": added,
+            "processed": removed + moved + added,
+        }
         logger.info(f"Sync: {result}")
         return result
 
     except Exception as e:
         logger.error(f"Erro no sync: {e}")
         db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+def run_sync_job() -> dict:
+    """Job wrapper para registrar e executar sync."""
+    job_id = _create_job("sync")
+    try:
+        result = run_sync()
+        if isinstance(result, dict) and result.get("error"):
+            _update_job(job_id, "failed", error_message=result.get("error"))
+            return result
+
+        processed_items = result.get("processed", None)
+        total_items = result.get("total", None)
+        _update_job(job_id, "completed", processed_items=processed_items, total_items=total_items)
+        return result
+    except Exception as e:
+        _update_job(job_id, "failed", error_message=str(e))
+        raise
+
+
+def run_purge_missing_job() -> dict:
+    """Job wrapper para registrar e executar purge missing."""
+    job_id = _create_job("purge_missing")
+    try:
+        result = run_purge_missing()
+        if isinstance(result, dict) and result.get("error"):
+            _update_job(job_id, "failed", error_message=result.get("error"))
+            return result
+
+        removed = result.get("removed", None)
+        _update_job(job_id, "completed", processed_items=removed, total_items=removed)
+        return result
+    except Exception as e:
+        _update_job(job_id, "failed", error_message=str(e))
+        raise
+
+
+def run_database_audit() -> dict:
+    """
+    Auditoria do banco de dados para identificar inconsistências.
+    - Conta arquivos por status (duplicatas, missing, etc)
+    - Encontra referências órfãs (faces sem mídia)
+    - Revalida contagem de mídia visível
+    """
+    db = SessionLocal()
+    try:
+        logger.info("Iniciando auditoria do banco...")
+        
+        # Contagem de mídia
+        total_media = db.query(Media).count()
+        non_duplicate = db.query(Media).filter(Media.is_duplicate == False).count()
+        duplicates = db.query(Media).filter(Media.is_duplicate == True).count()
+        organized = db.query(Media).filter(Media.is_organized == True).count()
+        missing = db.query(Media).filter(Media.missing_since.isnot(None)).count()
+        visible_count = db.query(Media).filter(
+            Media.is_duplicate == False,
+            Media.is_organized == True,
+        ).count()
+        
+        # Faces órfãs (referência a mídia deletada)
+        orphan_faces = 0
+        all_faces = db.query(Face).all()
+        for face in all_faces:
+            if not face.media_items:
+                orphan_faces += 1
+                logger.warning(f"Face órfã encontrada: {face.id}")
+        
+        report = {
+            "total_media": total_media,
+            "non_duplicate": non_duplicate,
+            "duplicates": duplicates,
+            "organized": organized,
+            "missing": missing,
+            "visible_count": visible_count,
+            "orphan_faces": orphan_faces,
+        }
+        logger.info(f"Auditoria completa: {report}")
+        return report
+    except Exception as e:
+        logger.error(f"Erro na auditoria: {e}")
         return {"error": str(e)}
     finally:
         db.close()

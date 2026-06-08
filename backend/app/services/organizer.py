@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 def move_to_trash(filepath: str) -> str:
-    """Move arquivo para .trash dentro da pasta pai (organized ou library). Retorna o novo caminho."""
+    """Move arquivo para .trash dentro da pasta pai (organized ou library).
+    Se o arquivo estiver em source, usa o .trash de organized_dir para manter
+    o source vazio após reorganização.
+    Retorna o novo caminho."""
     abs_path = os.path.abspath(filepath)
 
     # Determina qual .trash usar baseado em onde o arquivo está
@@ -38,9 +41,9 @@ def move_to_trash(filepath: str) -> str:
         abs_organized = os.path.abspath(settings.organized_dir)
         if abs_path.startswith(abs_organized + os.sep):
             trash_dir = os.path.join(settings.organized_dir, ".trash")
-    # Fallback: .trash na pasta source
+    # Fallback: .trash no organized_dir para manter source vazio
     if not trash_dir:
-        trash_dir = os.path.join(settings.source_dir, ".trash")
+        trash_dir = os.path.join(settings.organized_dir, ".trash")
 
     os.makedirs(trash_dir, exist_ok=True)
     filename = Path(filepath).name
@@ -56,6 +59,37 @@ def move_to_trash(filepath: str) -> str:
     shutil.move(filepath, dest)
     logger.info(f"Movido para trash: {filepath} -> {dest}")
     return dest
+
+
+def cleanup_source_trash() -> None:
+    """Move arquivos de source/.trash para organized/.trash e limpa o source."""
+    source_trash = os.path.join(settings.source_dir, ".trash")
+    if not os.path.isdir(source_trash):
+        return
+
+    organized_trash = os.path.join(settings.organized_dir, ".trash")
+    os.makedirs(organized_trash, exist_ok=True)
+
+    for entry in os.listdir(source_trash):
+        src_path = os.path.join(source_trash, entry)
+        if not os.path.exists(src_path):
+            continue
+
+        dest_path = os.path.join(organized_trash, entry)
+        base, ext = os.path.splitext(entry)
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(organized_trash, f"{base}_{counter}{ext}")
+            counter += 1
+
+        shutil.move(src_path, dest_path)
+        logger.info(f"Movido do source .trash para organized .trash: {src_path} -> {dest_path}")
+
+    try:
+        os.rmdir(source_trash)
+        logger.info(f"Removido source .trash vazio: {source_trash}")
+    except OSError:
+        pass
 
 # Padrão de nome de arquivo com data: 20260101_153500.jpg / IMG_20260101_153500.jpg
 DATE_PATTERNS = [

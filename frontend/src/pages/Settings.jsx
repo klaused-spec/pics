@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Database, FolderOpen, Download, Upload, Save, AlertTriangle, Trash2, Plus, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { getSettings, updateSettings, backupDatabase, restoreDatabase } from '../api'
 import api from '../api'
 
 export default function Settings() {
+  const navigate = useNavigate()
   const [paths, setPaths] = useState({ source_dir: '', organized_dir: '', database_path: '', organization_pattern: 'year/month', library_folders: [], allow_library_modify: false })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null) // { type, text, section }
@@ -371,6 +373,23 @@ export default function Settings() {
             {message.text}
           </div>
         )}
+      </section>
+
+      {/* Manutenção */}
+      <section className="bg-white rounded-xl shadow p-6 space-y-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Database className="w-5 h-5" /> Manutenção
+        </h2>
+        <p className="text-sm text-gray-600">
+          Acesse a página de manutenção para diagnosticar problemas e executar operações de sincronização.
+        </p>
+        <button
+          onClick={() => navigate('/maintenance')}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+        >
+          <Database className="w-4 h-4" />
+          Ir para Manutenção
+        </button>
       </section>
     </div>
   )

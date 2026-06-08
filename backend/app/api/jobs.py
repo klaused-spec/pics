@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models import ProcessingJob
-from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync, run_purge_missing
+from app.workers.processor import (
+    run_scan_and_organize,
+    run_ai_processing,
+    run_face_detection,
+    run_sync_job,
+    run_purge_missing_job,
+    run_database_audit,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -76,7 +83,7 @@ def start_full_pipeline(background_tasks: BackgroundTasks):
     """Executa pipeline completo: sync → scan → organizar → IA → faces. Processa TUDO pendente."""
 
     def full_pipeline():
-        run_sync()
+        run_sync_job()
         run_scan_and_organize()
         # Processa tudo pendente (sem limite de batch)
         run_ai_processing(batch_size=99999)
@@ -89,8 +96,15 @@ def start_full_pipeline(background_tasks: BackgroundTasks):
 @router.post("/sync")
 def start_sync(background_tasks: BackgroundTasks):
     """Sincroniza banco com pastas: detecta movidos, apagados e novos."""
-    background_tasks.add_task(run_sync)
+    background_tasks.add_task(run_sync_job)
     return {"message": "Sync iniciado em background"}
+
+
+@router.get("/audit")
+def database_audit():
+    """Realiza auditoria imediata do banco e retorna estatísticas."""
+    result = run_database_audit()
+    return result
 
 
 @router.post("/purge-missing")
@@ -100,5 +114,5 @@ def start_purge_missing(background_tasks: BackgroundTasks, db: Session = Depends
     missing_count = db.query(Media).filter(Media.missing_since.isnot(None)).count()
     if missing_count == 0:
         return {"message": "Nenhum arquivo missing para remover", "missing_count": 0}
-    background_tasks.add_task(run_purge_missing)
+    background_tasks.add_task(run_purge_missing_job)
     return {"message": f"Purge iniciado: {missing_count} arquivos missing serão removidos", "missing_count": missing_count}

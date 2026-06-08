@@ -11,6 +11,7 @@ import Slideshow from './pages/Slideshow'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
 import Duplicates from './pages/Duplicates'
+import Maintenance from './pages/Maintenance'
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
         <Route path="persons/:id" element={<PersonDetail />} />
         <Route path="settings" element={<Settings />} />
         <Route path="duplicates" element={<Duplicates />} />
+        <Route path="maintenance" element={<Maintenance />} />
         <Route path="dashboard" element={<Dashboard />} />
       </Route>
       <Route path="/slideshow" element={<Slideshow />} />

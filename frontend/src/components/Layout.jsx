@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Home, Image, Search, Users, Play, Settings } from 'lucide-react'
+import { Home, Image, Search, Users, Play, Settings, Database } from 'lucide-react'
 
 function Layout() {
   const navItems = [
@@ -7,6 +7,7 @@ function Layout() {
     { to: '/gallery', icon: Image, label: 'Galeria' },
     { to: '/search', icon: Search, label: 'Busca' },
     { to: '/persons', icon: Users, label: 'Pessoas' },
+    { to: '/maintenance', icon: Database, label: 'Manutenção' },
     { to: '/settings', icon: Settings, label: 'Config' },
   ]
 

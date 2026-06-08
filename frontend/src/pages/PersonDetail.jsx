@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getPersonMedia, updatePerson, getFaceThumbnailUrl } from '../api'
+import { getPersonMedia, updatePerson, deletePerson, getFaceThumbnailUrl } from '../api'
 import MediaGrid from '../components/MediaGrid'
-import { ArrowLeft, Edit2, Play, Image } from 'lucide-react'
+import { ArrowLeft, Edit2, Play, Image, Trash2 } from 'lucide-react'
 
 function PersonDetail() {
   const { id } = useParams()
@@ -12,6 +12,8 @@ function PersonDetail() {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState('')
   const [showAvatarPicker, setShowAvatarPicker] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -48,6 +50,18 @@ function PersonDetail() {
     } catch (err) {
       console.error(err)
     }
+  }
+
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      await deletePerson(id)
+      navigate('/persons')
+    } catch (err) {
+      console.error(err)
+      alert('Erro ao deletar pessoa')
+    }
+    setDeleting(false)
   }
 
   function startSlideshow() {
@@ -123,7 +137,42 @@ function PersonDetail() {
             <Play size={14} />
             Slideshow
           </button>
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded-lg text-sm"
+            title="Deletar esta pessoa"
+          >
+            <Trash2 size={14} />
+            Deletar
+          </button>
         </div>
+
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-gray-800 rounded-lg p-6 max-w-sm mx-4 border border-red-600">
+              <h3 className="text-lg font-semibold mb-2">Deletar "{data.person.name}"?</h3>
+              <p className="text-sm text-gray-300 mb-4">
+                Os {data.person.face_count} rostos serão desassociados (não serão deletados). 
+                Você poderá reagrupá-los depois.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg text-sm font-medium"
+                >
+                  {deleting ? 'Deletando...' : 'Sim, deletar'}
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto">
