@@ -23,11 +23,33 @@ const THUMB_DIR = `${FileSystem.documentDirectory}thumbs/`
 const FULL_DIR = `${FileSystem.documentDirectory}full/`
 
 function normalizeBaseUrl(value) {
-  return value.trim().replace(/\/$/, '')
+  const trimmed = value.trim()
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+  return withProtocol.replace(/\/$/, '')
 }
 
 function apiUrl(baseUrl, path) {
   return `${normalizeBaseUrl(baseUrl)}/api${path}`
+}
+
+function networkErrorMessage(error, url) {
+  if (error.name === 'AbortError') {
+    return `Tempo esgotado tentando conectar em ${url}`
+  }
+  if (/network request failed/i.test(error.message)) {
+    return `Falha de rede tentando conectar em ${url}. Confira se o celular acessa esse endereco e se ele comeca com http:// ou https://.`
+  }
+  return error.message
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 function authHeaders(token) {
@@ -132,8 +154,9 @@ export default function App() {
   }
 
   async function login() {
+    const loginUrl = apiUrl(baseUrl, '/auth/login')
     try {
-      const response = await fetch(apiUrl(baseUrl, '/auth/login'), {
+      const response = await fetchWithTimeout(loginUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -152,7 +175,7 @@ export default function App() {
       await persistSettings({ token: data.access_token })
       await syncLibrary(data.access_token)
     } catch (error) {
-      Alert.alert('Login', error.message)
+      Alert.alert('Login', networkErrorMessage(error, loginUrl))
     }
   }
 
@@ -169,7 +192,8 @@ export default function App() {
 
       while (true) {
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
-        const response = await fetch(apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=250&size=300${sinceParam}`), {
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=250&size=300${sinceParam}`)
+        const response = await fetchWithTimeout(manifestUrl, {
           headers: authHeaders(activeToken),
         })
         if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)

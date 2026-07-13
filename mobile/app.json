@@ -8,9 +8,9 @@
     "assetBundlePatterns": [
       "**/*"
     ],
+    "plugins": ["./plugins/with-cleartext-traffic"],
     "android": {
-      "package": "com.pics.mobile",
-      "usesCleartextTraffic": true
+      "package": "com.pics.mobile"
     },
     "extra": {
       "eas": {
