@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "PICS Mobile",
+    "slug": "pics-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.pics.mobile",
+      "usesCleartextTraffic": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2f8317f6-4f61-4654-ab84-b9071d8e456e"
+      }
+    }
+  }
+}
