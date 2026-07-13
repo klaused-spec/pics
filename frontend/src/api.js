@@ -1,11 +1,57 @@
 import axios from 'axios'
 
-const api = axios.create({
-  baseURL: '/api',
+// Detecta dinamicamente o host do backend
+// - Se estiver em localhost:5173 → usa localhost:8000
+// - Se estiver em klaused.tplinkdns.com:5173 → usa klaused.tplinkdns.com:8000
+// - Se for um IP (172.xxx:5173) → usa o mesmo IP com porta 8000
+// Sempre usa HTTP (backend roda em HTTP)
+const getBaseURL = () => {
+  const hostname = window.location.hostname
+  
+  // Se for localhost ou 127.0.0.1, usa localhost:8000
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:8000/api'
+  }
+  
+  // Sempre usa HTTP para o backend (mesmo se frontend for HTTPS)
+  return `http://${hostname}:8000/api`
+}
+
+const apiRoot = getBaseURL()
+console.log('Backend URL:', apiRoot)
+
+export const api = axios.create({
+  baseURL: apiRoot,
+  withCredentials: true, // Importante para cookies/auth headers
+})
+const backendRoot = apiRoot.replace(/\/api$/, '')
+
+// Interceptor para adicionar token JWT em todas as requisições
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('access_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
 })
 
-// Mídia
-export const getMedia = (params) => api.get('/media/', { params })
+// ===== AUTENTICAÇÃO =====
+export const register = (email, password) => 
+  api.post('/auth/register', { email, password })
+  
+export const login = (email, password) => 
+  api.post('/auth/login', { email, password })
+  
+export const getCurrentUser = () => 
+  api.get('/auth/me')
+  
+export const logout = () => {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('userEmail')
+}
+
+// ===== MÍDIA =====
+export const getMedia = (params) => api.get('/media', { params })
 export const getMediaById = (id) => api.get(`/media/${id}`)
 export const getMediaNeighbors = (id) => api.get(`/media/${id}/neighbors`)
 export const searchMedia = (q, limit = 50) => api.get('/media/search', { params: { q, limit } })
@@ -26,9 +72,13 @@ export const confirmFace = (faceId) => api.post(`/persons/faces/${faceId}/confir
 export const ignoreFace = (faceId) => api.post(`/persons/faces/${faceId}/ignore`)
 export const createManualFace = (mediaId, bbox) => api.post('/persons/faces/manual', { media_id: mediaId, ...bbox })
 export const getPendingFaces = (params) => api.get('/persons/faces/pending', { params })
-export const getFaceThumbnailUrl = (faceId, size = 120) => `/api/persons/faces/${faceId}/thumbnail?size=${size}`
+export const getFaceThumbnailUrl = (faceId, size = 120) => `${backendRoot}/api/persons/faces/${faceId}/thumbnail?size=${size}`
 export const mergePersons = (keepId, mergeId) => api.post('/persons/merge', { keep_id: keepId, merge_id: mergeId })
 export const runClustering = () => api.post('/persons/cluster')
+export const getHighConfidenceFaces = (params) => api.get('/persons/faces/high-confidence', { params })
+export const bulkApproveFaces = (faceIds) => api.post('/persons/faces/bulk-approve', { face_ids: faceIds })
+export const refreshFaceSuggestions = () => api.post('/persons/faces/refresh-suggestions')
+export const cleanupLowConfidenceFaces = (minConfidence = 0.40) => api.post('/persons/cleanup', null, { params: { min_confidence: minConfidence } })
 
 // Jobs
 export const getJobs = (params) => api.get('/jobs/', { params })
@@ -49,11 +99,18 @@ export const deleteAlbum = (id) => api.delete(`/albums/${id}`)
 export const getAlbumMedia = (id, params) => api.get(`/albums/${id}/media`, { params })
 export const addMediaToAlbum = (albumId, mediaIds) => api.post(`/albums/${albumId}/media`, { media_ids: mediaIds })
 export const removeMediaFromAlbum = (albumId, mediaIds) => api.delete(`/albums/${albumId}/media`, { data: { media_ids: mediaIds } })
+export const createFolderAndMoveMedia = (year, month, folderName, mediaIds) => api.post('/media/folders', { year, month, folder_name: folderName, media_ids: mediaIds })
+export const bulkCorrectMediaDate = (data) => api.post('/media/bulk-date-correction', data)
+export const startThumbnailWarmup = (size = 300) => api.post('/jobs/thumbnail-warmup', null, { params: { size } })
+export const deleteJob = (jobId) => api.delete(`/jobs/${jobId}`)
+export const deleteAllJobs = (force = false) => api.delete('/jobs/', { params: { force } })
+export const resumeInterruptedJobs = () => api.post('/jobs/resume-interrupted')
+export const resumeJob = (jobId) => api.post(`/jobs/${jobId}/resume`)
 
 // URLs de mídia
-export const getThumbnailUrl = (id, size = 300) => `/api/media/${id}/thumbnail?size=${size}`
-export const getFileUrl = (id) => `/api/media/${id}/file`
-export const getStreamUrl = (id) => `/api/media/${id}/stream`
+export const getThumbnailUrl = (id, size = 300) => `${backendRoot}/api/media/${id}/thumbnail?size=${size}`
+export const getFileUrl = (id) => `${backendRoot}/api/media/${id}/file`
+export const getStreamUrl = (id) => `${backendRoot}/api/media/${id}/stream`
 export const forceTranscode = (id) => api.post(`/media/${id}/transcode`)
 export const getTranscodeStatus = (id) => api.get(`/media/${id}/transcode-status`)
 export const deleteOriginalVideo = (id) => api.delete(`/media/${id}/original`)
@@ -67,6 +124,13 @@ export const restoreDatabase = (file) => {
   const form = new FormData()
   form.append('file', file)
   return api.post('/settings/restore', form)
+}
+
+// Mobile
+export const getMobileApks = () => api.get('/mobile/apks')
+export const getMobileApkUrl = (filename, token = '') => {
+  const url = `${backendRoot}/api/mobile/apks/${encodeURIComponent(filename)}`
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url
 }
 
 export default api
