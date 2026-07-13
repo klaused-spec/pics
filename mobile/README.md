@@ -18,7 +18,7 @@ npm install
 npm run android
 ```
 
-No Android físico, use a URL LAN do backend, por exemplo `http://192.168.0.10:8000`.
+No Android físico, o app vem apontando para `http://klaused.tplinkdns.com:8000`. Se estiver usando apenas rede local, troque para a URL LAN do backend, por exemplo `http://192.168.0.10:8000`.
 
 ## Gerar APK
 

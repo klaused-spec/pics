@@ -80,8 +80,8 @@ async function downloadWithAuth(url, destination, token, onProgress) {
 }
 
 export default function App() {
-  const [baseUrl, setBaseUrl] = useState('http://192.168.0.10:8000')
-  const [email, setEmail] = useState('')
+  const [baseUrl, setBaseUrl] = useState('http://klaused.tplinkdns.com:8000')
+  const [email, setEmail] = useState('klaused@gmail.com')
   const [password, setPassword] = useState('')
   const [token, setToken] = useState('')
   const [items, setItems] = useState([])
@@ -138,7 +138,14 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       })
-      if (!response.ok) throw new Error('Login recusado')
+      if (!response.ok) {
+        let detail = 'Login recusado'
+        try {
+          const errorData = await response.json()
+          detail = errorData.detail || detail
+        } catch (_) {}
+        throw new Error(`${detail} (${response.status})`)
+      }
       const data = await response.json()
       setToken(data.access_token)
       setPassword('')
