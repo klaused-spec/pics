@@ -6,6 +6,8 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   FlatList,
   Image,
   Modal,
@@ -20,9 +22,11 @@ import {
 
 const SETTINGS_KEY = 'pics_mobile_settings'
 const ITEMS_KEY = 'pics_mobile_items'
+const ALBUMS_KEY = 'pics_mobile_albums'
 const THUMB_DIR = `${FileSystem.documentDirectory}thumbs/`
 const FULL_DIR = `${FileSystem.documentDirectory}full/`
 const ITEM_CACHE_LIMIT = 5000
+const DEFAULT_SLIDE_SECONDS = 5
 
 function normalizeBaseUrl(value) {
   const trimmed = value.trim()
@@ -93,6 +97,14 @@ function fullPath(item) {
   return `${FULL_DIR}${item.id}_${encodeURIComponent(version)}${extensionFromContent(item)}`
 }
 
+const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+
+function folderName(folder) {
+  if (!folder) return 'Sem pasta'
+  const parts = folder.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || 'Sem pasta'
+}
+
 function dateKey(item) {
   if (item.date_taken) return item.date_taken.slice(0, 10)
   if (item.year && item.month) return `${item.year}-${String(item.month).padStart(2, '0')}`
@@ -161,9 +173,30 @@ export default function App() {
   const [fullProgress, setFullProgress] = useState(0)
   const [scrubLabel, setScrubLabel] = useState('')
   const [scrubbing, setScrubbing] = useState(false)
+  const [scrubRatio, setScrubRatio] = useState(0)
   const listRef = useRef(null)
   const scrubTrackRef = useRef({ y: 0, height: 0 })
   const anchorsRef = useRef([])
+  const listMetricsRef = useRef({ offset: 0, contentHeight: 1, viewHeight: 1 })
+
+  const [treeYear, setTreeYear] = useState(null)
+  const [treeMonth, setTreeMonth] = useState(null)
+  const [treeFolder, setTreeFolder] = useState(null)
+
+  const [albums, setAlbums] = useState([])
+  const [openAlbumId, setOpenAlbumId] = useState(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [slideSeconds, setSlideSeconds] = useState(DEFAULT_SLIDE_SECONDS)
+
+  const [newAlbumName, setNewAlbumName] = useState('')
+  const [showNewAlbum, setShowNewAlbum] = useState(false)
+
+  const [slideshow, setSlideshow] = useState(null)
+  const [slideIndex, setSlideIndex] = useState(0)
+  const [slidePreparing, setSlidePreparing] = useState('')
+  const slideOpacity = useRef(new Animated.Value(1)).current
+  const slideTimerRef = useRef(null)
 
   useEffect(() => {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {})
@@ -173,13 +206,17 @@ export default function App() {
   async function boot() {
     await ensureDirectories()
     await refreshCachedFullIds()
-    const [storedSettings, storedItems] = await Promise.all([
+    const [storedSettings, storedItems, storedAlbums] = await Promise.all([
       AsyncStorage.getItem(SETTINGS_KEY),
       AsyncStorage.getItem(ITEMS_KEY),
+      AsyncStorage.getItem(ALBUMS_KEY),
     ])
     const cachedItems = storedItems ? JSON.parse(storedItems) : []
     if (cachedItems.length) {
       setItems(cachedItems)
+    }
+    if (storedAlbums) {
+      try { setAlbums(JSON.parse(storedAlbums)) } catch (_) {}
     }
     if (storedSettings) {
       const parsed = JSON.parse(storedSettings)
@@ -187,6 +224,7 @@ export default function App() {
       setEmail(parsed.email || '')
       setToken(parsed.token || '')
       setSyncToken(parsed.syncToken || null)
+      if (parsed.slideSeconds) setSlideSeconds(parsed.slideSeconds)
       if (parsed.token) {
         syncLibrary(parsed.token, parsed.baseUrl || baseUrl, parsed.syncToken || null, cachedItems)
       }
@@ -199,9 +237,73 @@ export default function App() {
       email,
       token,
       syncToken,
+      slideSeconds,
       ...next,
     }
     await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+  }
+
+  async function persistAlbums(nextAlbums) {
+    setAlbums(nextAlbums)
+    await AsyncStorage.setItem(ALBUMS_KEY, JSON.stringify(nextAlbums)).catch(() => {})
+  }
+
+  function createAlbum() {
+    setNewAlbumName('')
+    setShowNewAlbum(true)
+  }
+
+  function confirmCreateAlbum() {
+    const trimmed = newAlbumName.trim() || `Álbum ${albums.length + 1}`
+    persistAlbums([...albums, { id: `${Date.now()}`, name: trimmed, itemIds: [] }])
+    setShowNewAlbum(false)
+    setNewAlbumName('')
+  }
+
+  function addSelectedToAlbum(albumId) {
+    const ids = Array.from(selectedIds)
+    const nextAlbums = albums.map((album) => {
+      if (album.id !== albumId) return album
+      const merged = Array.from(new Set([...album.itemIds, ...ids]))
+      return { ...album, itemIds: merged }
+    })
+    persistAlbums(nextAlbums)
+    setSelectMode(false)
+    setSelectedIds(new Set())
+  }
+
+  function removeFromAlbum(albumId, itemId) {
+    const nextAlbums = albums.map((album) => album.id === albumId ? { ...album, itemIds: album.itemIds.filter((id) => id !== itemId) } : album)
+    persistAlbums(nextAlbums)
+  }
+
+  function deleteAlbum(albumId) {
+    Alert.alert('Excluir álbum', 'Remover este álbum? As fotos continuam na biblioteca.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Excluir', style: 'destructive', onPress: () => {
+        persistAlbums(albums.filter((album) => album.id !== albumId))
+        if (openAlbumId === albumId) setOpenAlbumId(null)
+      } },
+    ])
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function startSelection(id) {
+    setSelectMode(true)
+    setSelectedIds(new Set([id]))
+  }
+
+  function cancelSelection() {
+    setSelectMode(false)
+    setSelectedIds(new Set())
   }
 
   async function refreshCachedFullIds() {
@@ -375,6 +477,72 @@ export default function App() {
     ])
   }
 
+  async function ensureFullDownloaded(item) {
+    const destination = fullPath(item)
+    if (await fileExists(destination)) return destination
+    const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
+    const uri = await downloadWithAuth(url, destination, token)
+    markFullCached(item.id)
+    return uri
+  }
+
+  async function startSlideshow(album) {
+    const albumItems = album.itemIds.map((id) => items.find((item) => item.id === id)).filter(Boolean)
+    if (!albumItems.length) {
+      Alert.alert('Slideshow', 'Este álbum está vazio.')
+      return
+    }
+    setSlidePreparing(`Preparando 0/${albumItems.length}`)
+    const prepared = []
+    try {
+      for (let index = 0; index < albumItems.length; index += 1) {
+        const item = albumItems[index]
+        setSlidePreparing(`Baixando ${index + 1}/${albumItems.length}`)
+        const uri = await ensureFullDownloaded(item)
+        prepared.push({ ...item, localUri: uri })
+      }
+    } catch (error) {
+      Alert.alert('Slideshow', error.message)
+      setSlidePreparing('')
+      return
+    }
+    setSlidePreparing('')
+    setSlideIndex(0)
+    slideOpacity.setValue(1)
+    setSlideshow({ album, items: prepared })
+  }
+
+  function stopSlideshow() {
+    if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
+    slideTimerRef.current = null
+    setSlideshow(null)
+  }
+
+  function advanceSlide(step = 1) {
+    setSlideshow((current) => {
+      if (!current) return current
+      Animated.timing(slideOpacity, { toValue: 0, duration: 350, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(() => {
+        setSlideIndex((prev) => {
+          const total = current.items.length
+          return (prev + step + total) % total
+        })
+        Animated.timing(slideOpacity, { toValue: 1, duration: 350, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
+      })
+      return current
+    })
+  }
+
+  useEffect(() => {
+    if (!slideshow) return
+    if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
+    const currentItem = slideshow.items[slideIndex]
+    if (currentItem?.media_type === 'video') return
+    slideTimerRef.current = setTimeout(() => advanceSlide(1), Math.max(2, slideSeconds) * 1000)
+    return () => {
+      if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
+    }
+  }, [slideshow, slideIndex, slideSeconds])
+
   const groupedLabel = useMemo(() => {
     if (!items.length) return 'Nenhuma mídia offline ainda'
     const first = items[0]
@@ -423,9 +591,42 @@ export default function App() {
     return { rows, anchors, total: visibleItems.length }
   }, [cachedFullIds, deferredSearchQuery, items, mediaFilter, offlineOnly])
 
+  const tree = useMemo(() => {
+    const years = new Map()
+    for (const item of items) {
+      const year = item.year || 0
+      const month = item.month || 0
+      const folder = item.folder || ''
+      if (!years.has(year)) years.set(year, { count: 0, months: new Map() })
+      const yearNode = years.get(year)
+      yearNode.count += 1
+      if (!yearNode.months.has(month)) yearNode.months.set(month, { count: 0, folders: new Map() })
+      const monthNode = yearNode.months.get(month)
+      monthNode.count += 1
+      if (!monthNode.folders.has(folder)) monthNode.folders.set(folder, [])
+      monthNode.folders.get(folder).push(item)
+    }
+    return years
+  }, [items])
+
+  const treeItems = useMemo(() => {
+    if (treeYear == null || treeMonth == null || treeFolder == null) return []
+    const yearNode = tree.get(treeYear)
+    const monthNode = yearNode?.months.get(treeMonth)
+    return monthNode?.folders.get(treeFolder) || []
+  }, [tree, treeYear, treeMonth, treeFolder])
+
   function renderTile(item) {
+    const isSelected = selectedIds.has(item.id)
+    const onPress = () => {
+      if (selectMode) toggleSelect(item.id)
+      else openItem(item)
+    }
+    const onLongPress = () => {
+      if (!selectMode) startSelection(item.id)
+    }
     return (
-      <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item)}>
+      <Pressable key={item.id} style={styles.tile} onPress={onPress} onLongPress={onLongPress} delayLongPress={250}>
         {item.thumbnail_failed ? (
           <View style={[styles.thumb, styles.thumbMissing]}>
             <Text style={styles.thumbMissingText}>SEM THUMB</Text>
@@ -435,17 +636,36 @@ export default function App() {
         )}
         {cachedFullIds.has(item.id) && <Text style={styles.offlineBadge}>OFFLINE</Text>}
         {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
+        {selectMode && (
+          <View style={[styles.selectMark, isSelected && styles.selectMarkActive]}>
+            <Text style={styles.selectMarkText}>{isSelected ? '✓' : ''}</Text>
+          </View>
+        )}
       </Pressable>
     )
   }
 
   anchorsRef.current = gallery.anchors
 
-  function scrubToPosition(pageY) {
+  function handleListScroll(event) {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
+    listMetricsRef.current = {
+      offset: contentOffset.y,
+      contentHeight: contentSize.height,
+      viewHeight: layoutMeasurement.height,
+    }
+    if (scrubbing) return
+    const scrollable = Math.max(1, contentSize.height - layoutMeasurement.height)
+    setScrubRatio(Math.max(0, Math.min(1, contentOffset.y / scrollable)))
+  }
+
+  function scrubToRatio(pageY) {
     const { y, height } = scrubTrackRef.current
     const anchors = anchorsRef.current
-    if (!height || !anchors.length) return
+    if (!height) return
     const ratio = Math.max(0, Math.min(1, (pageY - y) / height))
+    setScrubRatio(ratio)
+    if (!anchors.length) return
     const index = Math.min(anchors.length - 1, Math.round(ratio * (anchors.length - 1)))
     const anchor = anchors[index]
     if (!anchor) return
@@ -466,11 +686,12 @@ export default function App() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (evt) => {
+        measureTrack()
         setScrubbing(true)
-        scrubToPosition(evt.nativeEvent.pageY)
+        scrubToRatio(evt.nativeEvent.pageY)
       },
       onPanResponderMove: (evt) => {
-        scrubToPosition(evt.nativeEvent.pageY)
+        scrubToRatio(evt.nativeEvent.pageY)
       },
       onPanResponderRelease: () => setScrubbing(false),
       onPanResponderTerminate: () => setScrubbing(false),
@@ -485,6 +706,8 @@ export default function App() {
       keyExtractor={(row) => row.key}
       contentContainerStyle={styles.grid}
       keyboardShouldPersistTaps="handled"
+      onScroll={handleListScroll}
+      scrollEventThrottle={16}
       onScrollToIndexFailed={(info) => {
         listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
       }}
@@ -514,14 +737,15 @@ export default function App() {
         onLayout={measureTrack}
         {...scrubResponder.panHandlers}
       >
-        <View style={styles.scrubberThumb} pointerEvents="none">
-          <Text style={styles.scrubberThumbText}>◆</Text>
+        <View style={styles.scrubberTrack} pointerEvents="none" />
+        <View style={[styles.scrubberThumb, { top: `${scrubRatio * 92}%` }]} pointerEvents="none">
+          <Text style={styles.scrubberThumbText}>⋮⋮</Text>
         </View>
-      </View>
-    )}
-    {scrubbing && !!scrubLabel && (
-      <View style={[styles.scrubberBubble, { top: '46%' }]} pointerEvents="none">
-        <Text style={styles.scrubberBubbleText}>{scrubLabel}</Text>
+        {scrubbing && !!scrubLabel && (
+          <View style={[styles.scrubberBubble, { top: `${scrubRatio * 92}%` }]} pointerEvents="none">
+            <Text style={styles.scrubberBubbleText}>{scrubLabel}</Text>
+          </View>
+        )}
       </View>
     )}
     </View>
@@ -554,9 +778,36 @@ export default function App() {
     )
   }
 
+  const openAlbum = albums.find((album) => album.id === openAlbumId) || null
+
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar style="dark" />
+
+      {selectMode && (
+        <View style={styles.selectionBar}>
+          <Pressable style={styles.selectionCancel} onPress={cancelSelection}>
+            <Text style={styles.selectionCancelText}>✕</Text>
+          </Pressable>
+          <Text style={styles.selectionText}>{selectedIds.size} selecionada(s)</Text>
+          <Pressable
+            style={styles.selectionAction}
+            onPress={() => {
+              if (!selectedIds.size) return
+              if (!albums.length) {
+                Alert.alert('Álbuns', 'Crie um álbum primeiro na aba Álbuns.')
+                return
+              }
+              Alert.alert('Adicionar ao álbum', 'Escolha o álbum', [
+                ...albums.map((album) => ({ text: album.name, onPress: () => addSelectedToAlbum(album.id) })),
+                { text: 'Cancelar', style: 'cancel' },
+              ])
+            }}
+          >
+            <Text style={styles.selectionActionText}>Adicionar ao álbum</Text>
+          </Pressable>
+        </View>
+      )}
 
       {activeTab === 'photos' && (
         <View style={styles.tabContent}>
@@ -620,6 +871,186 @@ export default function App() {
         </View>
       )}
 
+      {activeTab === 'albums' && !openAlbum && (
+        <View style={styles.tabContent}>
+          <View style={styles.topBar}>
+            <Text style={styles.topTitle}>Álbuns</Text>
+          </View>
+          <Pressable style={styles.newAlbumButton} onPress={createAlbum}>
+            <Text style={styles.newAlbumButtonText}>＋ Novo álbum</Text>
+          </Pressable>
+          <FlatList
+            data={albums}
+            keyExtractor={(album) => album.id}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            ListEmptyComponent={(
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyEmoji}>📁</Text>
+                <Text style={styles.emptyTitle}>Nenhum álbum ainda</Text>
+                <Text style={styles.emptyText}>Segure uma foto na aba Fotos para adicionar a um álbum.</Text>
+              </View>
+            )}
+            renderItem={({ item: album }) => {
+              const cover = album.itemIds.map((id) => items.find((it) => it.id === id)).find(Boolean)
+              return (
+                <Pressable style={styles.albumRow} onPress={() => setOpenAlbumId(album.id)} onLongPress={() => deleteAlbum(album.id)}>
+                  <View style={styles.albumCover}>
+                    {cover ? (
+                      <Image source={{ uri: cover.local_thumbnail_uri || cover.thumbnail_url, headers: authHeaders(token) }} style={{ width: '100%', height: '100%', borderRadius: 10 }} />
+                    ) : (
+                      <Text style={styles.albumCoverText}>📁</Text>
+                    )}
+                  </View>
+                  <View style={styles.albumInfo}>
+                    <Text style={styles.albumName} numberOfLines={1}>{album.name}</Text>
+                    <Text style={styles.albumCount}>{album.itemIds.length} itens</Text>
+                  </View>
+                  <Pressable style={styles.albumPlay} onPress={() => startSlideshow(album)}>
+                    <Text style={styles.albumPlayText}>▶</Text>
+                  </Pressable>
+                </Pressable>
+              )
+            }}
+          />
+        </View>
+      )}
+
+      {activeTab === 'albums' && openAlbum && (
+        <View style={styles.tabContent}>
+          <View style={styles.albumHeaderBar}>
+            <Pressable style={styles.backButton} onPress={() => setOpenAlbumId(null)}>
+              <Text style={styles.backButtonText}>← Álbuns</Text>
+            </Pressable>
+            <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]} numberOfLines={1}>{openAlbum.name}</Text>
+            <Pressable style={styles.albumPlay} onPress={() => startSlideshow(openAlbum)}>
+              <Text style={styles.albumPlayText}>▶</Text>
+            </Pressable>
+          </View>
+          <FlatList
+            data={chunkItems(openAlbum.itemIds.map((id) => items.find((it) => it.id === id)).filter(Boolean), 3)}
+            keyExtractor={(_, index) => `album-row-${index}`}
+            contentContainerStyle={styles.grid}
+            ListEmptyComponent={(
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyEmoji}>🖼️</Text>
+                <Text style={styles.emptyTitle}>Álbum vazio</Text>
+                <Text style={styles.emptyText}>Segure fotos na aba Fotos e adicione a este álbum.</Text>
+              </View>
+            )}
+            renderItem={({ item: rowItems }) => (
+              <View style={styles.tileRow}>
+                {rowItems.map((item) => (
+                  <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item)} onLongPress={() => {
+                    Alert.alert('Remover do álbum', item.filename, [
+                      { text: 'Cancelar', style: 'cancel' },
+                      { text: 'Remover', style: 'destructive', onPress: () => removeFromAlbum(openAlbum.id, item.id) },
+                    ])
+                  }} delayLongPress={250}>
+                    {item.thumbnail_failed ? (
+                      <View style={[styles.thumb, styles.thumbMissing]}><Text style={styles.thumbMissingText}>SEM THUMB</Text></View>
+                    ) : (
+                      <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} />
+                    )}
+                    {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
+                  </Pressable>
+                ))}
+                {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
+              </View>
+            )}
+          />
+        </View>
+      )}
+
+      {activeTab === 'tree' && (
+        <View style={styles.tabContent}>
+          {treeYear == null && (
+            <>
+              <View style={styles.topBar}>
+                <Text style={styles.topTitle}>Pastas</Text>
+              </View>
+              <FlatList
+                data={Array.from(tree.keys()).sort((a, b) => b - a)}
+                keyExtractor={(year) => `year-${year}`}
+                contentContainerStyle={{ paddingBottom: 24 }}
+                ListEmptyComponent={<View style={styles.emptyState}><Text style={styles.emptyEmoji}>📂</Text><Text style={styles.emptyTitle}>Sem dados</Text><Text style={styles.emptyText}>Sincronize a biblioteca primeiro.</Text></View>}
+                renderItem={({ item: year }) => (
+                  <Pressable style={styles.treeRow} onPress={() => setTreeYear(year)}>
+                    <Text style={styles.treeIcon}>📅</Text>
+                    <Text style={styles.treeLabel}>{year || 'Sem data'}</Text>
+                    <Text style={styles.treeCount}>{tree.get(year).count}</Text>
+                    <Text style={styles.treeChevron}>›</Text>
+                  </Pressable>
+                )}
+              />
+            </>
+          )}
+
+          {treeYear != null && treeMonth == null && (
+            <>
+              <View style={styles.albumHeaderBar}>
+                <Pressable style={styles.backButton} onPress={() => setTreeYear(null)}><Text style={styles.backButtonText}>← Anos</Text></Pressable>
+                <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]}>{treeYear || 'Sem data'}</Text>
+              </View>
+              <FlatList
+                data={Array.from(tree.get(treeYear)?.months.keys() || []).sort((a, b) => b - a)}
+                keyExtractor={(month) => `month-${month}`}
+                contentContainerStyle={{ paddingBottom: 24, paddingTop: 8 }}
+                renderItem={({ item: month }) => (
+                  <Pressable style={styles.treeRow} onPress={() => setTreeMonth(month)}>
+                    <Text style={styles.treeIcon}>🗓️</Text>
+                    <Text style={styles.treeLabel}>{month ? MONTH_NAMES[month - 1] : 'Sem mês'}</Text>
+                    <Text style={styles.treeCount}>{tree.get(treeYear).months.get(month).count}</Text>
+                    <Text style={styles.treeChevron}>›</Text>
+                  </Pressable>
+                )}
+              />
+            </>
+          )}
+
+          {treeYear != null && treeMonth != null && treeFolder == null && (
+            <>
+              <View style={styles.albumHeaderBar}>
+                <Pressable style={styles.backButton} onPress={() => setTreeMonth(null)}><Text style={styles.backButtonText}>← Meses</Text></Pressable>
+                <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]}>{treeMonth ? MONTH_NAMES[treeMonth - 1] : 'Sem mês'} {treeYear || ''}</Text>
+              </View>
+              <FlatList
+                data={Array.from(tree.get(treeYear)?.months.get(treeMonth)?.folders.entries() || [])}
+                keyExtractor={([folder]) => `folder-${folder}`}
+                contentContainerStyle={{ paddingBottom: 24, paddingTop: 8 }}
+                renderItem={({ item: [folder, folderItems] }) => (
+                  <Pressable style={styles.treeRow} onPress={() => setTreeFolder(folder)}>
+                    <Text style={styles.treeIcon}>📁</Text>
+                    <Text style={styles.treeLabel} numberOfLines={1}>{folderName(folder)}</Text>
+                    <Text style={styles.treeCount}>{folderItems.length}</Text>
+                    <Text style={styles.treeChevron}>›</Text>
+                  </Pressable>
+                )}
+              />
+            </>
+          )}
+
+          {treeYear != null && treeMonth != null && treeFolder != null && (
+            <>
+              <View style={styles.albumHeaderBar}>
+                <Pressable style={styles.backButton} onPress={() => setTreeFolder(null)}><Text style={styles.backButtonText}>← Pastas</Text></Pressable>
+                <Text style={[styles.topTitle, { flex: 1, fontSize: 20 }]} numberOfLines={1}>{folderName(treeFolder)}</Text>
+              </View>
+              <FlatList
+                data={chunkItems(treeItems, 3)}
+                keyExtractor={(_, index) => `tree-row-${index}`}
+                contentContainerStyle={styles.grid}
+                renderItem={({ item: rowItems }) => (
+                  <View style={styles.tileRow}>
+                    {rowItems.map(renderTile)}
+                    {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
+                  </View>
+                )}
+              />
+            </>
+          )}
+        </View>
+      )}
+
       {activeTab === 'settings' && (
         <FlatList
           data={[1]}
@@ -663,6 +1094,22 @@ export default function App() {
               </View>
               {!!syncStatus && <Text style={styles.status}>{syncStatus}</Text>}
 
+              <Text style={styles.sectionLabel}>Slideshow</Text>
+              <View style={styles.settingsGroup}>
+                <View style={styles.rowItem}>
+                  <Text style={styles.rowItemText}>Tempo por foto</Text>
+                  <View style={styles.stepperRow}>
+                    <Pressable style={styles.stepperButton} onPress={() => { const next = Math.max(2, slideSeconds - 1); setSlideSeconds(next); persistSettings({ slideSeconds: next }) }}>
+                      <Text style={styles.stepperButtonText}>−</Text>
+                    </Pressable>
+                    <Text style={styles.stepperValue}>{slideSeconds}s</Text>
+                    <Pressable style={styles.stepperButton} onPress={() => { const next = Math.min(60, slideSeconds + 1); setSlideSeconds(next); persistSettings({ slideSeconds: next }) }}>
+                      <Text style={styles.stepperButtonText}>＋</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+
               <Text style={styles.sectionLabel}>Conta</Text>
               <View style={styles.settingsGroup}>
                 <Pressable style={styles.rowItem} onPress={confirmLogout}>
@@ -679,9 +1126,11 @@ export default function App() {
         {[
           ['photos', 'Fotos', '🖼️'],
           ['search', 'Buscar', '🔍'],
+          ['tree', 'Pastas', '🗂️'],
+          ['albums', 'Álbuns', '📁'],
           ['settings', 'Config', '⚙️'],
         ].map(([value, label, icon]) => (
-          <Pressable key={value} style={styles.tabButton} onPress={() => setActiveTab(value)}>
+          <Pressable key={value} style={styles.tabButton} onPress={() => { setActiveTab(value); if (value !== 'albums') setOpenAlbumId(null); if (value !== 'tree') { setTreeYear(null); setTreeMonth(null); setTreeFolder(null) } }}>
             <Text style={[styles.tabIcon, activeTab === value && styles.tabIconActive]}>{icon}</Text>
             <Text style={[styles.tabLabel, activeTab === value && styles.tabLabelActive]}>{label}</Text>
           </Pressable>
@@ -707,6 +1156,70 @@ export default function App() {
             <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
           )}
         </SafeAreaView>
+      </Modal>
+
+      <Modal visible={showNewAlbum} animationType="fade" transparent onRequestClose={() => setShowNewAlbum(false)}>
+        <View style={styles.dialogBackdrop}>
+          <View style={styles.dialogCard}>
+            <Text style={styles.dialogTitle}>Novo álbum</Text>
+            <TextInput style={styles.input} value={newAlbumName} onChangeText={setNewAlbumName} placeholder="Nome do álbum" placeholderTextColor="#9aa4b2" selectionColor="#2563eb" cursorColor="#2563eb" autoFocus />
+            <View style={styles.dialogActions}>
+              <Pressable style={styles.dialogCancel} onPress={() => setShowNewAlbum(false)}>
+                <Text style={styles.dialogCancelText}>Cancelar</Text>
+              </Pressable>
+              <Pressable style={styles.dialogConfirm} onPress={confirmCreateAlbum}>
+                <Text style={styles.dialogConfirmText}>Criar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {!!slidePreparing && (
+        <View style={styles.slidePrepare}>
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.slidePrepareText}>{slidePreparing}</Text>
+        </View>
+      )}
+
+      <Modal visible={!!slideshow} animationType="fade" onRequestClose={stopSlideshow}>
+        <View style={styles.slideScreen}>
+          {slideshow && (() => {
+            const current = slideshow.items[slideIndex]
+            if (!current) return null
+            return (
+              <>
+                <Animated.View style={[styles.slideMedia, { opacity: slideOpacity }]}>
+                  {current.media_type === 'video' ? (
+                    <Video
+                      source={{ uri: current.localUri }}
+                      style={styles.slideMedia}
+                      resizeMode={ResizeMode.CONTAIN}
+                      shouldPlay
+                      onPlaybackStatusUpdate={(status) => {
+                        if (status.didJustFinish) advanceSlide(1)
+                      }}
+                    />
+                  ) : (
+                    <Image source={{ uri: current.localUri }} style={styles.slideMedia} resizeMode="contain" />
+                  )}
+                </Animated.View>
+                <Pressable style={[styles.slideClose, { left: 20, right: undefined }]} onPress={() => advanceSlide(-1)}>
+                  <Text style={styles.slideCloseText}>‹</Text>
+                </Pressable>
+                <Pressable style={styles.slideClose} onPress={stopSlideshow}>
+                  <Text style={styles.slideCloseText}>✕</Text>
+                </Pressable>
+                <Pressable style={[styles.slideClose, { top: undefined, bottom: 90, right: 20 }]} onPress={() => advanceSlide(1)}>
+                  <Text style={styles.slideCloseText}>›</Text>
+                </Pressable>
+                <View style={styles.slideCounter}>
+                  <Text style={styles.slideCounterText}>{slideIndex + 1} / {slideshow.items.length}</Text>
+                </View>
+              </>
+            )
+          })()}
+        </View>
       </Modal>
     </SafeAreaView>
   )
@@ -773,12 +1286,71 @@ const styles = StyleSheet.create({
   emptyText: { color: '#64748b', textAlign: 'center' },
 
   // Date scrubber
-  scrubber: { position: 'absolute', right: 3, top: 0, bottom: 0, width: 34, justifyContent: 'center', alignItems: 'center' },
-  scrubberTrack: { flex: 1, marginVertical: 12, justifyContent: 'space-between', alignItems: 'center' },
-  scrubberThumb: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
-  scrubberThumbText: { color: '#ffffff', fontSize: 9, fontWeight: '900' },
-  scrubberBubble: { position: 'absolute', right: 42, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#0f172a' },
+  scrubber: { position: 'absolute', right: 0, top: 6, bottom: 6, width: 40 },
+  scrubberTrack: { position: 'absolute', right: 18, top: 0, bottom: 0, width: 4, borderRadius: 2, backgroundColor: '#d7deea' },
+  scrubberThumb: { position: 'absolute', right: 6, width: 28, height: 40, borderRadius: 14, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  scrubberThumbText: { color: '#ffffff', fontSize: 12, fontWeight: '900' },
+  scrubberBubble: { position: 'absolute', right: 44, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#0f172a' },
   scrubberBubbleText: { color: '#ffffff', fontWeight: '900', fontSize: 15 },
+
+  // Selection
+  selectMark: { position: 'absolute', right: 8, top: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#ffffff', backgroundColor: 'rgba(15,23,42,0.35)', alignItems: 'center', justifyContent: 'center' },
+  selectMarkActive: { backgroundColor: '#2563eb', borderColor: '#ffffff' },
+  selectMarkText: { color: '#ffffff', fontSize: 12, fontWeight: '900' },
+  selectionBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#0f172a' },
+  selectionText: { color: '#ffffff', fontWeight: '800', flex: 1 },
+  selectionAction: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#2563eb' },
+  selectionActionText: { color: '#ffffff', fontWeight: '800' },
+  selectionCancel: { paddingHorizontal: 12, paddingVertical: 8 },
+  selectionCancelText: { color: '#94a3b8', fontWeight: '800' },
+
+  // Albums
+  albumRow: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 10, padding: 12, borderRadius: 14, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#eef2f7' },
+  albumCover: { width: 54, height: 54, borderRadius: 10, backgroundColor: '#e2e8f0', marginRight: 12, alignItems: 'center', justifyContent: 'center' },
+  albumCoverText: { fontSize: 22 },
+  albumInfo: { flex: 1 },
+  albumName: { color: '#0f172a', fontWeight: '800', fontSize: 16 },
+  albumCount: { color: '#64748b', fontSize: 12, marginTop: 2 },
+  albumPlay: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
+  albumPlayText: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
+  newAlbumButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginHorizontal: 16, marginBottom: 12, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#c7d2fe', backgroundColor: '#eef2ff' },
+  newAlbumButtonText: { color: '#2563eb', fontWeight: '800' },
+  albumHeaderBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingTop: 12 },
+  backButton: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#eef2f7' },
+  backButtonText: { color: '#2563eb', fontWeight: '800' },
+
+  // Slideshow
+  slidePrepare: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15,23,42,0.75)', zIndex: 20 },
+  slidePrepareText: { color: '#ffffff', fontWeight: '800', marginTop: 12 },
+  slideScreen: { flex: 1, backgroundColor: '#000000' },
+  slideMedia: { flex: 1, width: '100%' },
+  slideClose: { position: 'absolute', top: 40, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  slideCloseText: { color: '#ffffff', fontSize: 18, fontWeight: '900' },
+  slideCounter: { position: 'absolute', bottom: 36, alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 10 },
+  slideCounterText: { color: '#ffffff', fontWeight: '700' },
+  sliderControlBtn: { paddingHorizontal: 16, paddingVertical: 10 },
+  sliderControlText: { color: '#ffffff', fontSize: 22, fontWeight: '900' },
+  stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 4 },
+  stepperButton: { width: 42, height: 42, borderRadius: 10, backgroundColor: '#e8eefc', alignItems: 'center', justifyContent: 'center' },
+  stepperButtonText: { color: '#2563eb', fontSize: 20, fontWeight: '900' },
+  stepperValue: { fontSize: 18, fontWeight: '800', color: '#0f172a', minWidth: 90, textAlign: 'center' },
+
+  // Tree
+  treeRow: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#eef2f7' },
+  treeIcon: { fontSize: 20, marginRight: 12 },
+  treeLabel: { flex: 1, color: '#0f172a', fontWeight: '700', fontSize: 16 },
+  treeCount: { color: '#64748b', fontWeight: '700', marginRight: 8 },
+  treeChevron: { color: '#94a3b8', fontSize: 20, fontWeight: '900' },
+
+  // Dialog
+  dialogBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
+  dialogCard: { width: '100%', backgroundColor: '#ffffff', borderRadius: 16, padding: 18 },
+  dialogTitle: { fontSize: 18, fontWeight: '800', color: '#0f172a', marginBottom: 12 },
+  dialogActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 6 },
+  dialogCancel: { paddingHorizontal: 14, paddingVertical: 10 },
+  dialogCancelText: { color: '#64748b', fontWeight: '800' },
+  dialogConfirm: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10, backgroundColor: '#2563eb' },
+  dialogConfirmText: { color: '#ffffff', fontWeight: '800' },
 
   // Settings
   settingsScroll: { paddingBottom: 24 },
