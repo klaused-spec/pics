@@ -171,21 +171,49 @@ async function downloadWithAuth(url, destination, token, onProgress) {
   return result.uri
 }
 
-async function ensureMediaPermission() {
+// Cache do status de permissão para não perguntar mais de uma vez.
+let mediaPermissionGranted = false
+
+async function hasMediaPermission() {
+  if (mediaPermissionGranted) return true
   const current = await MediaLibrary.getPermissionsAsync()
-  if (current.granted) return true
-  const asked = await MediaLibrary.requestPermissionsAsync()
-  return asked.granted
+  mediaPermissionGranted = !!current.granted
+  return mediaPermissionGranted
 }
 
-async function saveUriToGallery(uri) {
+async function ensureMediaPermission() {
+  if (await hasMediaPermission()) return true
+  const asked = await MediaLibrary.requestPermissionsAsync()
+  mediaPermissionGranted = !!asked.granted
+  return mediaPermissionGranted
+}
+
+// Copia o arquivo baixado para um nome original antes de mandar para a galeria,
+// preservando o nome do arquivo (o conteúdo/EXIF já vem original do servidor).
+async function stageOriginalNamed(uri, filename) {
+  if (!filename) return uri
+  const safeName = filename.replace(/[\\/]/g, '_')
+  const target = `${FileSystem.cacheDirectory}${safeName}`
+  try {
+    if (await fileExists(target)) {
+      await FileSystem.deleteAsync(target, { idempotent: true })
+    }
+    await FileSystem.copyAsync({ from: uri, to: target })
+    return target
+  } catch (_) {
+    return uri
+  }
+}
+
+async function saveUriToGallery(uri, filename) {
   const granted = await ensureMediaPermission()
   if (!granted) {
     const error = new Error('Permissão para a galeria negada')
     error.code = 'PERMISSION'
     throw error
   }
-  const asset = await MediaLibrary.createAssetAsync(uri)
+  const sourceUri = await stageOriginalNamed(uri, filename)
+  const asset = await MediaLibrary.createAssetAsync(sourceUri)
   try {
     const album = await MediaLibrary.getAlbumAsync(GALLERY_ALBUM)
     if (album) {
@@ -195,6 +223,9 @@ async function saveUriToGallery(uri) {
     }
   } catch (_) {
     // Se a organização em álbum falhar, o asset já está na galeria mesmo assim.
+  }
+  if (sourceUri !== uri) {
+    await FileSystem.deleteAsync(sourceUri, { idempotent: true }).catch(() => {})
   }
   return asset
 }
@@ -253,6 +284,9 @@ export default function App() {
 
   async function boot() {
     await ensureDirectories()
+    // Pede permissão da galeria uma única vez no início; assim o salvamento
+    // automático dos arquivos offline nunca pergunta foto a foto.
+    ensureMediaPermission().catch(() => {})
     await refreshCachedFullIds()
     const [storedSettings, storedItems, storedAlbums] = await Promise.all([
       AsyncStorage.getItem(SETTINGS_KEY),
@@ -591,11 +625,14 @@ export default function App() {
     const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
     const uri = await downloadWithAuth(url, destination, token)
     markFullCached(item.id)
-    // Todo arquivo baixado offline também vai para a galeria (álbum "Pics").
+    // Todo arquivo baixado offline também vai para a galeria (álbum "Pics"),
+    // mas SEM disparar pedido de permissão a cada foto: só salva se já concedida.
     try {
-      await saveUriToGallery(uri)
+      if (await hasMediaPermission()) {
+        await saveUriToGallery(uri, item.filename)
+      }
     } catch (_) {
-      // Sem permissão ou falha na galeria não impede o uso offline dentro do app.
+      // Falha na galeria não impede o uso offline dentro do app.
     }
     return uri
   }
@@ -604,7 +641,7 @@ export default function App() {
     setSavingGallery(true)
     try {
       const uri = await ensureFullDownloaded(item)
-      await saveUriToGallery(uri)
+      await saveUriToGallery(uri, item.filename)
       Alert.alert('Galeria', `Salvo em "${GALLERY_ALBUM}" na galeria do celular.`)
     } catch (error) {
       if (error.code === 'PERMISSION') {
@@ -631,7 +668,7 @@ export default function App() {
       for (const item of chosen) {
         try {
           const uri = await ensureFullDownloaded(item)
-          await saveUriToGallery(uri)
+          await saveUriToGallery(uri, item.filename)
           ok += 1
         } catch (_) {}
       }
