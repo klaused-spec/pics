@@ -44,7 +44,13 @@ export const login = (email, password) =>
   
 export const getCurrentUser = () => 
   api.get('/auth/me')
-  
+
+// ===== USUÁRIOS =====
+export const getUsers = () => api.get('/auth/users')
+export const createUser = (email, password) => api.post('/auth/users', { email, password })
+export const updateUserPassword = (id, password) => api.put(`/auth/users/${id}/password`, { password })
+export const deleteUser = (id) => api.delete(`/auth/users/${id}`)
+
 export const logout = () => {
   localStorage.removeItem('access_token')
   localStorage.removeItem('userEmail')
@@ -128,9 +134,6 @@ export const restoreDatabase = (file) => {
 
 // Mobile
 export const getMobileApks = () => api.get('/mobile/apks')
-export const getMobileApkUrl = (filename, token = '') => {
-  const url = `${backendRoot}/api/mobile/apks/${encodeURIComponent(filename)}`
-  return token ? `${url}?token=${encodeURIComponent(token)}` : url
-}
+export const getMobileApkUrl = (filename) => `${backendRoot}/api/mobile/apks/${encodeURIComponent(filename)}`
 
 export default api

@@ -1,5 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
+import ProtectedRoute from './components/ProtectedRoute'
+import Login from './pages/Login'
 import Gallery from './pages/Gallery'
 import AlbumDetail from './pages/AlbumDetail'
 import MediaDetail from './pages/MediaDetail'
@@ -12,11 +14,18 @@ import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
 import Duplicates from './pages/Duplicates'
 import Maintenance from './pages/Maintenance'
+import MobileApps from './pages/MobileApps'
+import Users from './pages/Users'
 
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<Layout />}>
+      <Route path="/login" element={<Login />} />
+      <Route path="/" element={
+        <ProtectedRoute>
+          <Layout />
+        </ProtectedRoute>
+      }>
         <Route index element={<Dashboard />} />
         <Route path="gallery" element={<Gallery />} />
         <Route path="albums/:id" element={<AlbumDetail />} />
@@ -28,9 +37,15 @@ function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="duplicates" element={<Duplicates />} />
         <Route path="maintenance" element={<Maintenance />} />
+        <Route path="mobile" element={<MobileApps />} />
+        <Route path="users" element={<Users />} />
         <Route path="dashboard" element={<Dashboard />} />
       </Route>
-      <Route path="/slideshow" element={<Slideshow />} />
+      <Route path="/slideshow" element={
+        <ProtectedRoute>
+          <Slideshow />
+        </ProtectedRoute>
+      } />
     </Routes>
   )
 }
