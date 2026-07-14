@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.models import Album, Media, album_media
 
 router = APIRouter(prefix="/albums", tags=["albums"])
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/albums", tags=["albums"])
 class AlbumCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    media_ids: Optional[list[int]] = None
 
 
 class AlbumUpdate(BaseModel):
@@ -30,20 +32,42 @@ class AlbumAddMedia(BaseModel):
 
 
 @router.get("/")
-def list_albums(db: Session = Depends(get_db)):
+def list_albums(
+    include_items: bool = Query(False),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Lista todos os álbuns com contagem de mídias."""
     albums = db.query(Album).order_by(Album.updated_at.desc()).all()
-    return [_album_to_dict(a, db) for a in albums]
+    return [_album_to_dict(a, db, include_items=include_items) for a in albums]
 
 
 @router.post("/", status_code=201)
-def create_album(data: AlbumCreate, db: Session = Depends(get_db)):
-    """Cria um novo álbum."""
+def create_album(
+    current_user: dict = Depends(get_current_user),
+    data: AlbumCreate = None,
+    db: Session = Depends(get_db),
+):
+    """Cria um novo álbum, opcionalmente já com mídias."""
     album = Album(name=data.name, description=data.description)
     db.add(album)
+    db.flush()
+
+    if data.media_ids:
+        existing_ids = set()
+        for media_id in data.media_ids:
+            if media_id in existing_ids:
+                continue
+            media = db.query(Media).filter(Media.id == media_id).first()
+            if media:
+                album.media_items.append(media)
+                existing_ids.add(media_id)
+        if not album.cover_media_id and album.media_items:
+            album.cover_media_id = album.media_items[0].id
+
     db.commit()
     db.refresh(album)
-    return _album_to_dict(album, db)
+    return _album_to_dict(album, db, include_items=True)
 
 
 @router.get("/{album_id}")
@@ -157,13 +181,13 @@ def remove_media_from_album(album_id: int, data: AlbumAddMedia, db: Session = De
     return {"removed": removed, "total": len(album.media_items)}
 
 
-def _album_to_dict(album: Album, db: Session) -> dict:
+def _album_to_dict(album: Album, db: Session, include_items: bool = False) -> dict:
     """Converte álbum para dicionário."""
     count = db.query(func.count(album_media.c.media_id)).filter(
         album_media.c.album_id == album.id
     ).scalar()
 
-    return {
+    result = {
         "id": album.id,
         "name": album.name,
         "description": album.description,
@@ -172,6 +196,17 @@ def _album_to_dict(album: Album, db: Session) -> dict:
         "created_at": album.created_at.isoformat() if album.created_at else None,
         "updated_at": album.updated_at.isoformat() if album.updated_at else None,
     }
+
+    if include_items:
+        item_ids = [
+            row[0]
+            for row in db.query(album_media.c.media_id)
+            .filter(album_media.c.album_id == album.id)
+            .all()
+        ]
+        result["item_ids"] = item_ids
+
+    return result
 
 
 def _media_to_dict(media: Media) -> dict:
