@@ -8,9 +8,24 @@
     "assetBundlePatterns": [
       "**/*"
     ],
-    "plugins": ["./plugins/with-cleartext-traffic"],
+    "plugins": [
+      "./plugins/with-cleartext-traffic",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "O PICS salva as fotos e vídeos baixados na sua galeria.",
+          "savePhotosPermission": "O PICS salva as fotos e vídeos baixados na sua galeria.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ],
     "android": {
-      "package": "com.pics.mobile"
+      "package": "com.pics.mobile",
+      "permissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
     },
     "extra": {
       "eas": {

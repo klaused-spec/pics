@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
 import * as FileSystem from 'expo-file-system'
+import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -32,6 +33,7 @@ const FULL_DIR = `${FileSystem.documentDirectory}full/`
 const ITEM_CACHE_LIMIT = 5000
 const DEFAULT_SLIDE_SECONDS = 5
 const SCRUB_THUMB = 44
+const GALLERY_ALBUM = 'Pics'
 
 function normalizeBaseUrl(value) {
   const trimmed = value.trim()
@@ -169,6 +171,34 @@ async function downloadWithAuth(url, destination, token, onProgress) {
   return result.uri
 }
 
+async function ensureMediaPermission() {
+  const current = await MediaLibrary.getPermissionsAsync()
+  if (current.granted) return true
+  const asked = await MediaLibrary.requestPermissionsAsync()
+  return asked.granted
+}
+
+async function saveUriToGallery(uri) {
+  const granted = await ensureMediaPermission()
+  if (!granted) {
+    const error = new Error('Permissão para a galeria negada')
+    error.code = 'PERMISSION'
+    throw error
+  }
+  const asset = await MediaLibrary.createAssetAsync(uri)
+  try {
+    const album = await MediaLibrary.getAlbumAsync(GALLERY_ALBUM)
+    if (album) {
+      await MediaLibrary.addAssetsToAlbumAsync([asset], album, false)
+    } else {
+      await MediaLibrary.createAlbumAsync(GALLERY_ALBUM, asset, false)
+    }
+  } catch (_) {
+    // Se a organização em álbum falhar, o asset já está na galeria mesmo assim.
+  }
+  return asset
+}
+
 export default function App() {
   const [baseUrl, setBaseUrl] = useState('http://klaused.tplinkdns.com:8000')
   const [email, setEmail] = useState('klaused@gmail.com')
@@ -186,6 +216,7 @@ export default function App() {
   const [selected, setSelected] = useState(null)
   const [fullUri, setFullUri] = useState(null)
   const [fullLoading, setFullLoading] = useState(false)
+  const [savingGallery, setSavingGallery] = useState(false)
   const [fullProgress, setFullProgress] = useState(0)
   const [scrubLabel, setScrubLabel] = useState('')
   const [scrubbing, setScrubbing] = useState(false)
@@ -563,6 +594,49 @@ export default function App() {
     return uri
   }
 
+  async function saveItemToGallery(item) {
+    setSavingGallery(true)
+    try {
+      const uri = await ensureFullDownloaded(item)
+      await saveUriToGallery(uri)
+      Alert.alert('Galeria', `Salvo em "${GALLERY_ALBUM}" na galeria do celular.`)
+    } catch (error) {
+      if (error.code === 'PERMISSION') {
+        Alert.alert('Galeria', 'Preciso de permissão de acesso às fotos para salvar na galeria.')
+      } else {
+        Alert.alert('Galeria', error.message)
+      }
+    } finally {
+      setSavingGallery(false)
+    }
+  }
+
+  async function saveSelectedToGallery() {
+    const chosen = Array.from(selectedIds).map((id) => items.find((it) => it.id === id)).filter(Boolean)
+    if (!chosen.length) return
+    setSavingGallery(true)
+    let ok = 0
+    try {
+      const granted = await ensureMediaPermission()
+      if (!granted) {
+        Alert.alert('Galeria', 'Preciso de permissão de acesso às fotos para salvar na galeria.')
+        return
+      }
+      for (const item of chosen) {
+        try {
+          const uri = await ensureFullDownloaded(item)
+          await saveUriToGallery(uri)
+          ok += 1
+        } catch (_) {}
+      }
+      Alert.alert('Galeria', `${ok}/${chosen.length} salvos em "${GALLERY_ALBUM}".`)
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    } finally {
+      setSavingGallery(false)
+    }
+  }
+
   async function startSlideshow(album) {
     const albumItems = album.itemIds.map((id) => items.find((item) => item.id === id)).filter(Boolean)
     if (!albumItems.length) {
@@ -910,6 +984,16 @@ export default function App() {
             style={styles.selectionNew}
             onPress={() => {
               if (!selectedIds.size) return
+              saveSelectedToGallery()
+            }}
+            disabled={savingGallery}
+          >
+            {savingGallery ? <ActivityIndicator color="#93c5fd" /> : <Text style={styles.selectionNewText}>⬇ Galeria</Text>}
+          </Pressable>
+          <Pressable
+            style={styles.selectionNew}
+            onPress={() => {
+              if (!selectedIds.size) return
               createAlbum()
             }}
           >
@@ -1247,6 +1331,9 @@ export default function App() {
               <Text style={styles.closeButtonText}>Fechar</Text>
             </Pressable>
             <Text style={styles.viewerTitle} numberOfLines={1}>{selected?.filename}</Text>
+            <Pressable onPress={() => selected && saveItemToGallery(selected)} style={styles.saveButton} disabled={savingGallery || fullLoading}>
+              {savingGallery ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.saveButtonText}>⬇ Salvar</Text>}
+            </Pressable>
           </View>
           {fullLoading && (
             <View style={styles.loadingFull}>
@@ -1496,6 +1583,8 @@ const styles = StyleSheet.create({
   closeButton: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: '#1e293b' },
   closeButtonText: { color: '#ffffff', fontWeight: '700' },
   viewerTitle: { flex: 1, color: '#e2e8f0', fontWeight: '700' },
+  saveButton: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: '#2563eb', minWidth: 92, alignItems: 'center' },
+  saveButtonText: { color: '#ffffff', fontWeight: '800' },
   viewerStatus: { color: '#e2e8f0', marginTop: 10 },
   loadingFull: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   fullImage: { flex: 1, width: '100%' },
