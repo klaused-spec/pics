@@ -96,7 +96,9 @@ async function downloadWithAuth(url, destination, token, onProgress) {
   const result = await download.downloadAsync()
   if (result.status < 200 || result.status >= 300) {
     await FileSystem.deleteAsync(destination, { idempotent: true })
-    throw new Error(`Download falhou (${result.status})`)
+    const error = new Error(`Download falhou (${result.status})`)
+    error.status = result.status
+    throw error
   }
   return result.uri
 }
@@ -188,29 +190,46 @@ export default function App() {
       let page = 1
       const requestedSince = activeSyncToken
       let nextSyncToken = activeSyncToken
+      let skippedThumbs = 0
       const itemMap = new Map(seedItems.map((item) => [item.id, item]))
 
       while (true) {
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
-        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=250&size=300${sinceParam}`)
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=1000&size=300${sinceParam}`)
         const response = await fetchWithTimeout(manifestUrl, {
           headers: authHeaders(activeToken),
         })
         if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)
         const data = await response.json()
-        setSyncStatus(`Baixando thumbs ${page}/${Math.max(data.pages, 1)}...`)
+        const totalPages = Math.max(data.pages, 1)
+        const totalItems = data.total || 0
+        const processedBeforePage = (page - 1) * data.per_page
+        setSyncStatus(`Thumbs: pagina ${page}/${totalPages} (${Math.min(processedBeforePage, totalItems)}/${totalItems} itens)`)
 
-        for (const item of data.items) {
+        for (const [index, item] of data.items.entries()) {
           const previous = itemMap.get(item.id)
           const localThumb = thumbPath(item)
           const thumbChanged = previous?.updated_at && previous.updated_at !== item.updated_at
           if (thumbChanged) {
             await FileSystem.deleteAsync(localThumb, { idempotent: true })
           }
+          let localThumbnailUri = localThumb
+          let thumbnailFailed = false
           if (thumbChanged || !(await fileExists(localThumb))) {
-            await downloadWithAuth(item.thumbnail_url, localThumb, activeToken)
+            try {
+              await downloadWithAuth(item.thumbnail_url, localThumb, activeToken)
+            } catch (error) {
+              if (!error.status) throw error
+              skippedThumbs += 1
+              thumbnailFailed = true
+              localThumbnailUri = null
+            }
           }
-          itemMap.set(item.id, { ...item, local_thumbnail_uri: localThumb })
+          itemMap.set(item.id, { ...item, local_thumbnail_uri: localThumbnailUri, thumbnail_failed: thumbnailFailed })
+          if ((index + 1) % 25 === 0 || index + 1 === data.items.length) {
+            const skippedText = skippedThumbs ? `, ${skippedThumbs} sem thumb` : ''
+            setSyncStatus(`Thumbs: pagina ${page}/${totalPages} (${Math.min(processedBeforePage + index + 1, totalItems)}/${totalItems} itens${skippedText})`)
+          }
         }
 
         nextSyncToken = data.sync_token
@@ -225,7 +244,7 @@ export default function App() {
       setSyncToken(nextSyncToken)
       await AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(nextItems))
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
-      setSyncStatus(`Offline pronto: ${nextItems.length} itens`)
+      setSyncStatus(`Offline pronto: ${nextItems.length} itens${skippedThumbs ? `, ${skippedThumbs} sem thumb` : ''}`)
     } catch (error) {
       Alert.alert('Sync', error.message)
       setSyncStatus('Sync interrompido')
@@ -270,9 +289,9 @@ export default function App() {
       </View>
 
       <View style={styles.panel}>
-        <TextInput style={styles.input} value={baseUrl} onChangeText={setBaseUrl} placeholder="http://IP-do-servidor:8000" autoCapitalize="none" />
-        <TextInput style={styles.input} value={email} onChangeText={setEmail} placeholder="email" autoCapitalize="none" keyboardType="email-address" />
-        <TextInput style={styles.input} value={password} onChangeText={setPassword} placeholder="senha" secureTextEntry />
+        <TextInput style={styles.input} value={baseUrl} onChangeText={setBaseUrl} placeholder="http://IP-do-servidor:8000" placeholderTextColor="#82796a" selectionColor="#1d5c53" cursorColor="#1d5c53" autoCapitalize="none" />
+        <TextInput style={styles.input} value={email} onChangeText={setEmail} placeholder="email" placeholderTextColor="#82796a" selectionColor="#1d5c53" cursorColor="#1d5c53" autoCapitalize="none" keyboardType="email-address" />
+        <TextInput style={styles.input} value={password} onChangeText={setPassword} placeholder="senha" placeholderTextColor="#82796a" selectionColor="#1d5c53" cursorColor="#1d5c53" secureTextEntry textContentType="password" autoComplete="password" autoCorrect={false} />
         <View style={styles.actions}>
           <Pressable style={styles.primaryButton} onPress={login}>
             <Text style={styles.primaryButtonText}>Entrar e sincronizar</Text>
@@ -291,7 +310,13 @@ export default function App() {
         contentContainerStyle={styles.grid}
         renderItem={({ item }) => (
           <Pressable style={styles.tile} onPress={() => openItem(item)}>
-            <Image source={{ uri: item.local_thumbnail_uri || thumbPath(item) }} style={styles.thumb} />
+            {item.thumbnail_failed ? (
+              <View style={[styles.thumb, styles.thumbMissing]}>
+                <Text style={styles.thumbMissingText}>SEM THUMB</Text>
+              </View>
+            ) : (
+              <Image source={{ uri: item.local_thumbnail_uri || thumbPath(item) }} style={styles.thumb} />
+            )}
             {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
           </Pressable>
         )}
@@ -327,7 +352,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 34, fontWeight: '800', color: '#18332f', letterSpacing: 0 },
   subtitle: { color: '#50645f', marginTop: 2 },
   panel: { margin: 12, padding: 12, borderRadius: 8, backgroundColor: '#fffaf0', borderWidth: 1, borderColor: '#ded6c7' },
-  input: { height: 42, borderWidth: 1, borderColor: '#cbc2b0', borderRadius: 6, paddingHorizontal: 10, marginBottom: 8, backgroundColor: '#ffffff' },
+  input: { height: 42, borderWidth: 1, borderColor: '#cbc2b0', borderRadius: 6, paddingHorizontal: 10, marginBottom: 8, backgroundColor: '#ffffff', color: '#18332f' },
   actions: { flexDirection: 'row', gap: 8 },
   primaryButton: { flex: 1, height: 42, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1d5c53' },
   primaryButtonText: { color: '#ffffff', fontWeight: '700' },
@@ -337,6 +362,8 @@ const styles = StyleSheet.create({
   grid: { paddingHorizontal: 8, paddingBottom: 24 },
   tile: { width: '33.333%', aspectRatio: 1, padding: 3 },
   thumb: { width: '100%', height: '100%', borderRadius: 6, backgroundColor: '#d9d2c4' },
+  thumbMissing: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#c9beab' },
+  thumbMissingText: { color: '#6d6255', fontSize: 10, fontWeight: '800' },
   videoBadge: { position: 'absolute', right: 7, bottom: 7, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: '#18332f', fontSize: 10, fontWeight: '800' },
   viewer: { flex: 1, backgroundColor: '#121614' },
   viewerHeader: { height: 54, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12 },
