@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
 import * as FileSystem from 'expo-file-system'
 import { StatusBar } from 'expo-status-bar'
-import { useEffect, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -92,6 +92,28 @@ function fullPath(item) {
   return `${FULL_DIR}${item.id}_${encodeURIComponent(version)}${extensionFromContent(item)}`
 }
 
+function dateKey(item) {
+  if (item.date_taken) return item.date_taken.slice(0, 10)
+  if (item.year && item.month) return `${item.year}-${String(item.month).padStart(2, '0')}`
+  return 'sem-data'
+}
+
+function dateTitle(key) {
+  if (key === 'sem-data') return 'Sem data'
+  const parts = key.split('-')
+  if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`
+  if (parts.length === 2) return `${parts[1]}/${parts[0]}`
+  return key
+}
+
+function chunkItems(groupItems, size) {
+  const chunks = []
+  for (let index = 0; index < groupItems.length; index += size) {
+    chunks.push(groupItems.slice(index, index + size))
+  }
+  return chunks
+}
+
 async function fileExists(uri) {
   const info = await FileSystem.getInfoAsync(uri)
   return info.exists
@@ -127,6 +149,10 @@ export default function App() {
   const [syncToken, setSyncToken] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncStatus, setSyncStatus] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [mediaFilter, setMediaFilter] = useState('all')
+  const [offlineOnly, setOfflineOnly] = useState(false)
+  const [cachedFullIds, setCachedFullIds] = useState(new Set())
   const [selected, setSelected] = useState(null)
   const [fullUri, setFullUri] = useState(null)
   const [fullLoading, setFullLoading] = useState(false)
@@ -139,6 +165,7 @@ export default function App() {
 
   async function boot() {
     await ensureDirectories()
+    await refreshCachedFullIds()
     const [storedSettings, storedItems] = await Promise.all([
       AsyncStorage.getItem(SETTINGS_KEY),
       AsyncStorage.getItem(ITEMS_KEY),
@@ -168,6 +195,24 @@ export default function App() {
       ...next,
     }
     await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+  }
+
+  async function refreshCachedFullIds() {
+    try {
+      const files = await FileSystem.readDirectoryAsync(FULL_DIR)
+      const ids = files.map((file) => file.match(/^(\d+)_/)?.[1]).filter(Boolean).map(Number)
+      setCachedFullIds(new Set(ids))
+    } catch (_) {
+      setCachedFullIds(new Set())
+    }
+  }
+
+  function markFullCached(id) {
+    setCachedFullIds((currentIds) => {
+      const nextIds = new Set(currentIds)
+      nextIds.add(id)
+      return nextIds
+    })
   }
 
   async function login() {
@@ -271,9 +316,12 @@ export default function App() {
       const destination = fullPath(item)
       if (await fileExists(destination)) {
         setFullUri(destination)
+        markFullCached(item.id)
       } else {
         const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
-        setFullUri(await downloadWithAuth(url, destination, token, setFullProgress))
+        const downloadedUri = await downloadWithAuth(url, destination, token, setFullProgress)
+        setFullUri(downloadedUri)
+        markFullCached(item.id)
       }
     } catch (error) {
       Alert.alert('Arquivo full', error.message)
@@ -283,11 +331,89 @@ export default function App() {
     }
   }
 
+  async function clearOfflineFiles() {
+    try {
+      await FileSystem.deleteAsync(FULL_DIR, { idempotent: true })
+      await FileSystem.deleteAsync(THUMB_DIR, { idempotent: true })
+      await ensureDirectories()
+      setCachedFullIds(new Set())
+      const nextItems = items.map((item) => ({ ...item, local_thumbnail_uri: null, thumbnail_failed: false }))
+      setItems(nextItems)
+      await persistItemCache(nextItems)
+      setSyncStatus('Arquivos offline removidos')
+    } catch (error) {
+      Alert.alert('Limpar offline', error.message)
+    }
+  }
+
+  function confirmClearOfflineFiles() {
+    Alert.alert('Limpar offline', 'Apagar arquivos full e thumbnails baixados deste celular?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Limpar', style: 'destructive', onPress: clearOfflineFiles },
+    ])
+  }
+
   const groupedLabel = useMemo(() => {
     if (!items.length) return 'Nenhuma mídia offline ainda'
     const first = items[0]
     return `${items.length} itens offline · mais recente ${first.year || '--'}/${String(first.month || '--').padStart(2, '0')}`
   }, [items])
+
+  const deferredSearchQuery = useDeferredValue(searchQuery)
+  const gallery = useMemo(() => {
+    const query = deferredSearchQuery.trim().toLowerCase()
+    const visibleItems = items.filter((item) => {
+      if (mediaFilter !== 'all' && item.media_type !== mediaFilter) return false
+      if (offlineOnly && !cachedFullIds.has(item.id)) return false
+      if (!query) return true
+      const searchable = [
+        item.filename,
+        item.folder,
+        item.media_type,
+        item.date_taken,
+        item.ai_description,
+        item.ai_location,
+        item.ai_scene_type,
+        Array.isArray(item.ai_objects) ? item.ai_objects.join(' ') : item.ai_objects,
+        item.year ? String(item.year) : '',
+        item.month ? String(item.month).padStart(2, '0') : '',
+      ].filter(Boolean).join(' ').toLowerCase()
+      return searchable.includes(query)
+    })
+
+    const groupedItems = new Map()
+    for (const item of visibleItems) {
+      const key = dateKey(item)
+      if (!groupedItems.has(key)) groupedItems.set(key, [])
+      groupedItems.get(key).push(item)
+    }
+
+    const rows = []
+    for (const [key, groupItems] of groupedItems.entries()) {
+      rows.push({ type: 'date', key: `date-${key}`, title: dateTitle(key), count: groupItems.length })
+      for (const [rowIndex, rowItems] of chunkItems(groupItems, 3).entries()) {
+        rows.push({ type: 'media', key: `media-${key}-${rowIndex}`, items: rowItems })
+      }
+    }
+
+    return { rows, total: visibleItems.length }
+  }, [cachedFullIds, deferredSearchQuery, items, mediaFilter, offlineOnly])
+
+  function renderTile(item) {
+    return (
+      <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item)}>
+        {item.thumbnail_failed ? (
+          <View style={[styles.thumb, styles.thumbMissing]}>
+            <Text style={styles.thumbMissingText}>SEM THUMB</Text>
+          </View>
+        ) : (
+          <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} onError={() => markThumbnailFailed(item.id)} />
+        )}
+        {cachedFullIds.has(item.id) && <Text style={styles.offlineBadge}>OFFLINE</Text>}
+        {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
+      </Pressable>
+    )
+  }
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -312,22 +438,43 @@ export default function App() {
         <Text style={styles.status}>{syncStatus}</Text>
       </View>
 
-      <FlatList
-        data={items}
-        keyExtractor={(item) => String(item.id)}
-        numColumns={3}
-        contentContainerStyle={styles.grid}
-        renderItem={({ item }) => (
-          <Pressable style={styles.tile} onPress={() => openItem(item)}>
-            {item.thumbnail_failed ? (
-              <View style={[styles.thumb, styles.thumbMissing]}>
-                <Text style={styles.thumbMissingText}>SEM THUMB</Text>
-              </View>
-            ) : (
-              <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} onError={() => markThumbnailFailed(item.id)} />
-            )}
-            {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
+      <View style={styles.galleryTools}>
+        <TextInput style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} placeholder="Buscar por nome, pasta ou data" placeholderTextColor="#82796a" selectionColor="#1d5c53" cursorColor="#1d5c53" autoCapitalize="none" />
+        <View style={styles.filterRow}>
+          {[
+            ['all', 'Tudo'],
+            ['image', 'Fotos'],
+            ['video', 'Videos'],
+          ].map(([value, label]) => (
+            <Pressable key={value} style={[styles.filterButton, mediaFilter === value && styles.filterButtonActive]} onPress={() => setMediaFilter(value)}>
+              <Text style={[styles.filterButtonText, mediaFilter === value && styles.filterButtonTextActive]}>{label}</Text>
+            </Pressable>
+          ))}
+          <Pressable style={[styles.filterButton, offlineOnly && styles.filterButtonActive]} onPress={() => setOfflineOnly((value) => !value)}>
+            <Text style={[styles.filterButtonText, offlineOnly && styles.filterButtonTextActive]}>Offline</Text>
           </Pressable>
+          <Text style={styles.resultCount}>{gallery.total} itens</Text>
+        </View>
+        <Pressable style={styles.clearButton} onPress={confirmClearOfflineFiles}>
+          <Text style={styles.clearButtonText}>Limpar arquivos offline</Text>
+        </Pressable>
+      </View>
+
+      <FlatList
+        data={gallery.rows}
+        keyExtractor={(row) => row.key}
+        contentContainerStyle={styles.grid}
+        keyboardShouldPersistTaps="handled"
+        renderItem={({ item }) => item.type === 'date' ? (
+          <View style={styles.dateHeader}>
+            <Text style={styles.dateTitle}>{item.title}</Text>
+            <Text style={styles.dateCount}>{item.count} itens</Text>
+          </View>
+        ) : (
+          <View style={styles.tileRow}>
+            {item.items.map(renderTile)}
+            {Array.from({ length: 3 - item.items.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
+          </View>
         )}
       />
 
@@ -368,11 +515,26 @@ const styles = StyleSheet.create({
   secondaryButton: { width: 84, height: 42, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: '#d6e7df' },
   secondaryButtonText: { color: '#17443e', fontWeight: '700' },
   status: { color: '#5d665f', marginTop: 8 },
+  galleryTools: { paddingHorizontal: 12, paddingBottom: 7 },
+  searchInput: { height: 42, borderWidth: 1, borderColor: '#cbc2b0', borderRadius: 6, paddingHorizontal: 10, marginBottom: 8, backgroundColor: '#ffffff', color: '#18332f' },
+  filterRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  filterButton: { height: 34, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: '#e5ded0', borderWidth: 1, borderColor: '#d1c6b5' },
+  filterButtonActive: { backgroundColor: '#1d5c53', borderColor: '#1d5c53' },
+  filterButtonText: { color: '#4d594f', fontWeight: '800' },
+  filterButtonTextActive: { color: '#ffffff' },
+  resultCount: { marginLeft: 'auto', color: '#50645f', fontWeight: '700' },
+  clearButton: { height: 34, marginTop: 8, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: '#efe7d8', borderWidth: 1, borderColor: '#d1c6b5' },
+  clearButtonText: { color: '#6b3d32', fontWeight: '800' },
   grid: { paddingHorizontal: 8, paddingBottom: 24 },
-  tile: { width: '33.333%', aspectRatio: 1, padding: 3 },
+  dateHeader: { height: 38, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, marginTop: 8 },
+  dateTitle: { color: '#18332f', fontSize: 18, fontWeight: '900' },
+  dateCount: { marginLeft: 'auto', color: '#68776f', fontWeight: '700' },
+  tileRow: { flexDirection: 'row' },
+  tile: { flex: 1, aspectRatio: 1, padding: 3 },
   thumb: { width: '100%', height: '100%', borderRadius: 6, backgroundColor: '#d9d2c4' },
   thumbMissing: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#c9beab' },
   thumbMissingText: { color: '#6d6255', fontSize: 10, fontWeight: '800' },
+  offlineBadge: { position: 'absolute', left: 7, top: 7, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: '#1d5c53', fontSize: 10, fontWeight: '800' },
   videoBadge: { position: 'absolute', right: 7, bottom: 7, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: '#18332f', fontSize: 10, fontWeight: '800' },
   viewer: { flex: 1, backgroundColor: '#121614' },
   viewerHeader: { height: 54, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12 },

@@ -1,20 +1,25 @@
 """
 Endpoints de mídia: listagem, busca, detalhes, thumbnail, streaming.
 """
+import datetime
 import os
 import mimetypes
 from pathlib import Path
 from typing import Optional
 
+from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.security import get_current_user
 from app.models import Media, Tag, Person, Face
 from app.services.ai_vision import search_by_description
+from app.services.file_ops import media_file_operation_lock
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -34,20 +39,209 @@ def _is_in_library_folder(filepath: str) -> bool:
     return False
 
 
+def _get_date_dir(year: int, month: int) -> str:
+    """Retorna a pasta base padrão para um ano/mês."""
+    if settings.organization_pattern == "year_month":
+        return os.path.join(settings.organized_dir, f"{year}_{month:02d}")
+    return os.path.join(settings.organized_dir, str(year), f"{month:02d}")
+
+
+def _get_date_dir_candidates(year: int, month: int, base_dir: Optional[str] = None) -> list[str]:
+    """Retorna possíveis diretórios de data para o mês/ano, considerando layouts comuns."""
+    base_dir = base_dir or settings.organized_dir
+    if settings.organization_pattern == "year_month":
+        candidates = [
+            os.path.join(base_dir, f"{year}_{month:02d}"),
+            os.path.join(base_dir, str(year), f"{year}_{month:02d}"),
+        ]
+    else:
+        candidates = [os.path.join(base_dir, str(year), f"{month:02d}")]
+
+    return [os.path.normpath(path) for path in dict.fromkeys(candidates)]
+
+
+def _get_month_prefixes(year: int, month: int) -> list[str]:
+    """Retorna todos os prefixes de diretório possíveis para organized_dir e library_folders."""
+    prefixes = _get_date_dir_candidates(year, month)
+    for folder in settings.library_folders:
+        prefixes.extend(_get_date_dir_candidates(year, month, folder))
+    return [os.path.normpath(path) for path in dict.fromkeys(prefixes)]
+
+
+def _find_date_dir_for_month(year: int, month: int) -> str:
+    """Retorna o primeiro diretório de mês existente ou o diretório padrão."""
+    for candidate in _get_month_prefixes(year, month):
+        if os.path.isdir(candidate):
+            return candidate
+    return _get_date_dir(year, month)
+
+
+def _get_folder_counts_for_date_dir(db: Session, date_dir: str) -> dict[str, int]:
+    """Conta arquivos em subpastas do diretório de mês usando uma única consulta SQL."""
+    if not os.path.isdir(date_dir):
+        return {}
+
+    normalized_dir = os.path.normpath(date_dir).rstrip(os.sep) + os.sep
+    relative_path = func.substr(Media.organized_path, len(normalized_dir) + 1)
+    folder_name = func.substr(relative_path, 1, func.instr(relative_path, os.sep) - 1)
+
+    results = (
+        db.query(folder_name.label('folder'), func.count(Media.id).label('count'))
+        .filter(Media.organized_path.like(f"{normalized_dir}%"))
+        .filter(Media.organized_path.like(f"{normalized_dir}%{os.sep}%"))
+        .group_by(folder_name)
+        .all()
+    )
+
+    return {folder: count for folder, count in results if folder}
+
+
+def _normalize_path_for_match(path: str) -> str:
+    return os.path.normpath(path).replace('\\', '/').rstrip('/')
+
+
+def _folder_counts_by_month(db: Session, media_type: Optional[str] = None) -> dict[tuple[int, int], dict[str, int]]:
+    """Conta subpastas de todos os meses em uma passada para montar a timeline rápido."""
+    query = db.query(Media.date_taken, Media.organized_path).filter(
+        Media.is_organized == True,
+        Media.date_taken.isnot(None),
+        Media.organized_path.isnot(None),
+    )
+    if media_type:
+        query = query.filter(Media.media_type == media_type)
+
+    prefix_cache: dict[tuple[int, int], list[str]] = {}
+    folder_counts: dict[tuple[int, int], dict[str, int]] = {}
+
+    for date_taken, organized_path in query.yield_per(1000):
+        month_key = (date_taken.year, date_taken.month)
+        prefixes = prefix_cache.get(month_key)
+        if prefixes is None:
+            prefixes = [_normalize_path_for_match(prefix) + '/' for prefix in _get_month_prefixes(*month_key)]
+            prefix_cache[month_key] = prefixes
+
+        normalized_path = _normalize_path_for_match(organized_path)
+        for prefix in prefixes:
+            if not normalized_path.startswith(prefix):
+                continue
+
+            relative_path = normalized_path[len(prefix):]
+            if '/' not in relative_path:
+                break
+
+            folder_name = relative_path.split('/', 1)[0]
+            counts = folder_counts.setdefault(month_key, {})
+            counts[folder_name] = counts.get(folder_name, 0) + 1
+            break
+
+    return folder_counts
+
+
+def _sanitize_folder_name(folder_name: str) -> str:
+    """Sanitiza o nome da pasta para evitar traversal e segmentos inválidos."""
+    folder_name = folder_name.strip()
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="Nome de pasta inválido")
+
+    segments = [segment.strip() for segment in folder_name.replace('\\', '/').split('/') if segment.strip()]
+    if not segments or any(segment in ('.', '..') for segment in segments):
+        raise HTTPException(status_code=400, detail="Nome de pasta inválido")
+
+    return os.path.join(*segments)
+
+
+class FolderMoveRequest(BaseModel):
+    year: int
+    month: int
+    folder_name: str
+    media_ids: list[int] = []
+
+
+class BulkDateCorrectionRequest(BaseModel):
+    date_taken: datetime.datetime
+    media_ids: list[int] = []
+    source_year: Optional[int] = None
+    source_month: Optional[int] = None
+    source_folder: Optional[str] = None
+    write_metadata: bool = True
+    move_files: bool = True
+    keep_folder: bool = True
+    rename_videos: bool = True
+
+
+def _write_jpeg_exif_date(filepath: str, date_taken: datetime.datetime) -> bool:
+    """Atualiza datas EXIF principais em JPEG quando Pillow consegue preservar o EXIF."""
+    if Path(filepath).suffix.lower() not in (".jpg", ".jpeg"):
+        return False
+
+    exif_date = date_taken.strftime("%Y:%m:%d %H:%M:%S")
+    with Image.open(filepath) as image:
+        exif = image.getexif()
+        exif[306] = exif_date  # Image DateTime
+        exif[36867] = exif_date  # DateTimeOriginal
+        exif[36868] = exif_date  # DateTimeDigitized
+        image.save(filepath, exif=exif)
+    return True
+
+
+def _resolve_media_path(media: Media) -> str:
+    return media.organized_path or media.original_path
+
+
+def _build_unique_destination(source_path: str, destination_dir: str, filename: Optional[str] = None) -> str:
+    os.makedirs(destination_dir, exist_ok=True)
+    filename = filename or os.path.basename(source_path)
+    dest_path = os.path.join(destination_dir, filename)
+    if not os.path.exists(dest_path):
+        return dest_path
+
+    base = Path(filename).stem
+    ext = Path(filename).suffix
+    counter = 1
+    while os.path.exists(dest_path):
+        dest_path = os.path.join(destination_dir, f"{base}_{counter}{ext}")
+        counter += 1
+    return dest_path
+
+
+def _build_date_prefixed_filename(filepath: str, date_taken: datetime.datetime) -> str:
+    original = Path(filepath).name
+    prefix = date_taken.strftime("%Y-%m-%d_%H%M%S")
+    if original.startswith(prefix + "_"):
+        return original
+    return f"{prefix}_{original}"
+
+
+def _get_relative_folder_under_month(filepath: str, year: int, month: int) -> Optional[str]:
+    normalized_path = _normalize_path_for_match(filepath)
+    for prefix in _get_month_prefixes(year, month):
+        normalized_prefix = _normalize_path_for_match(prefix) + '/'
+        if not normalized_path.startswith(normalized_prefix):
+            continue
+        relative_path = normalized_path[len(normalized_prefix):]
+        if '/' not in relative_path:
+            return None
+        folder_part = relative_path.rsplit('/', 1)[0]
+        return _sanitize_folder_name(folder_part)
+    return None
+
+
 @router.get("/")
 def list_media(
+    current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     media_type: Optional[str] = None,
     year: Optional[int] = None,
     month: Optional[int] = None,
     day: Optional[int] = None,
+    folder: Optional[str] = None,
     person_id: Optional[int] = None,
     tag: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """Lista mídias com paginação e filtros."""
-    query = db.query(Media).filter(Media.is_duplicate == False, Media.is_organized == True)
+    query = db.query(Media).filter(Media.is_organized == True)
 
     if media_type:
         query = query.filter(Media.media_type == media_type)
@@ -58,6 +252,41 @@ def list_media(
         query = query.filter(func.extract("month", Media.date_taken) == month)
     if day:
         query = query.filter(func.extract("day", Media.date_taken) == day)
+
+    if folder:
+        if not year or not month:
+            raise HTTPException(status_code=400, detail="Filtrar por pasta requer ano e mês")
+        safe_folder = _sanitize_folder_name(folder)
+
+        folder_paths = []
+        for date_dir in _get_date_dir_candidates(year, month):
+            folder_paths.append(os.path.join(date_dir, safe_folder))
+        for lib in settings.library_folders:
+            for date_dir in _get_date_dir_candidates(year, month, lib):
+                folder_paths.append(os.path.join(date_dir, safe_folder))
+
+        conditions = [Media.organized_path.like(f"{path}{os.sep}%") for path in folder_paths]
+        if conditions:
+            query = query.filter(or_(*conditions))
+    elif year and month:
+        query = query.filter(Media.is_duplicate == False)
+        # Sem folder específico: mostra apenas arquivos na raiz do mês (não em subpastas).
+        prefixes = _get_month_prefixes(year, month)
+
+        conditions = []
+        for p in prefixes:
+            prefix = p.rstrip(os.sep) + os.sep
+            conditions.append(
+                and_(
+                    Media.organized_path.like(f"{prefix}%"),
+                    ~Media.organized_path.like(f"{prefix}%{os.sep}%"),
+                )
+            )
+
+        if conditions:
+            query = query.filter(or_(*conditions))
+    else:
+        query = query.filter(Media.is_duplicate == False)
 
     if person_id:
         query = query.join(Media.faces).filter(Face.person_id == person_id)
@@ -84,6 +313,7 @@ def list_media(
 
 @router.get("/search")
 def search_media(
+    current_user: dict = Depends(get_current_user),
     q: str = Query(..., min_length=2),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -99,7 +329,9 @@ def search_media(
 
 @router.get("/timeline")
 def get_timeline(
+    current_user: dict = Depends(get_current_user),
     media_type: Optional[str] = None,
+    include_folders: bool = Query(True),
     db: Session = Depends(get_db),
 ):
     """Retorna timeline agrupada por ano/mês."""
@@ -119,15 +351,175 @@ def get_timeline(
         .all()
     )
 
-    return [
-        {"year": int(r.year), "month": int(r.month), "count": r.count}
-        for r in results
-        if r.year is not None
-    ]
+    folder_counts_by_month = _folder_counts_by_month(db, media_type) if include_folders else {}
+    timeline = []
+    for r in results:
+        if r.year is None:
+            continue
+        year = int(r.year)
+        month = int(r.month)
+        folder_map = folder_counts_by_month.get((year, month), {})
+
+        folders = [{"name": name, "count": cnt} for name, cnt in sorted(folder_map.items())]
+
+        timeline.append({"year": year, "month": month, "count": r.count, "folders": folders})
+
+    return timeline
+
+
+@router.get("/timeline/folders")
+def get_timeline_folders(
+    year: int = Query(..., ge=1900),
+    month: int = Query(..., ge=1, le=12),
+    media_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Retorna a lista de pastas para um mês/ano específico."""
+    folder_map = {}
+    try:
+        for date_dir in _get_month_prefixes(year, month):
+            counts = _get_folder_counts_for_date_dir(db, date_dir)
+            for name, cnt in counts.items():
+                folder_map[name] = folder_map.get(name, 0) + cnt
+    except OSError:
+        folder_map = {}
+
+    return [{"name": name, "count": cnt} for name, cnt in sorted(folder_map.items())]
+
+
+@router.post("/folders")
+def create_folder_and_move_media(data: FolderMoveRequest, db: Session = Depends(get_db)):
+    """Cria uma pasta dentro da data selecionada e move mídias para ela."""
+    with media_file_operation_lock:
+        date_dir = _find_date_dir_for_month(data.year, data.month)
+        folder_path = _sanitize_folder_name(data.folder_name)
+        destination_dir = os.path.join(date_dir, folder_path)
+        os.makedirs(destination_dir, exist_ok=True)
+
+        moved = 0
+        errors = []
+        for media_id in data.media_ids:
+            media = db.query(Media).get(media_id)
+            if not media:
+                errors.append(f"Mídia {media_id} não encontrada")
+                continue
+
+            filepath = media.organized_path or media.original_path
+            if not filepath or not os.path.exists(filepath):
+                errors.append(f"Arquivo não encontrado para mídia {media_id}")
+                continue
+
+            if _is_in_library_folder(filepath) and not settings.allow_library_modify:
+                errors.append(f"Modificação de arquivos em biblioteca não autorizada: {media.filename}")
+                continue
+
+            dest_path = os.path.join(destination_dir, os.path.basename(filepath))
+            if os.path.exists(dest_path):
+                base = Path(filepath).stem
+                ext = Path(filepath).suffix
+                counter = 1
+                while os.path.exists(dest_path):
+                    dest_path = os.path.join(destination_dir, f"{base}_{counter}{ext}")
+                    counter += 1
+
+            try:
+                os.makedirs(destination_dir, exist_ok=True)
+                os.replace(filepath, dest_path)
+                media.original_path = dest_path
+                media.organized_path = dest_path
+                media.filename = os.path.basename(dest_path)
+                media.is_organized = True
+                moved += 1
+            except Exception as exc:
+                errors.append(f"Erro ao mover mídia {media_id}: {exc}")
+
+        db.commit()
+    if errors and moved == 0:
+        raise HTTPException(status_code=400, detail={"moved": moved, "errors": errors})
+    return {"status": "ok", "moved": moved, "errors": errors}
+
+
+@router.post("/bulk-date-correction")
+def bulk_date_correction(data: BulkDateCorrectionRequest, db: Session = Depends(get_db)):
+    """Corrige data em lote, grava EXIF quando possível e move arquivos para o mês correto."""
+    if not data.media_ids:
+        raise HTTPException(status_code=400, detail="Selecione ao menos uma mídia")
+
+    corrected = 0
+    metadata_written = 0
+    moved = 0
+    errors = []
+
+    target_date = data.date_taken.replace(tzinfo=None)
+    target_date_dir = _get_date_dir(target_date.year, target_date.month)
+
+    with media_file_operation_lock:
+        for media_id in data.media_ids:
+            media = db.query(Media).get(media_id)
+            if not media:
+                errors.append(f"Mídia {media_id} não encontrada")
+                continue
+
+            filepath = _resolve_media_path(media)
+            if not filepath or not os.path.exists(filepath):
+                errors.append(f"Arquivo não encontrado para mídia {media_id}")
+                continue
+
+            if _is_in_library_folder(filepath) and not settings.allow_library_modify:
+                errors.append(f"Modificação de arquivos em biblioteca não autorizada: {media.filename}")
+                continue
+
+            if data.write_metadata and media.media_type == "image":
+                try:
+                    if _write_jpeg_exif_date(filepath, target_date):
+                        metadata_written += 1
+                except Exception as exc:
+                    errors.append(f"Erro ao gravar EXIF em {media.filename}: {exc}")
+
+            media.date_taken = target_date
+            corrected += 1
+
+            if data.move_files:
+                destination_dir = target_date_dir
+                if data.keep_folder:
+                    folder_name = None
+                    if data.source_folder:
+                        folder_name = _sanitize_folder_name(data.source_folder)
+                    elif data.source_year and data.source_month:
+                        folder_name = _get_relative_folder_under_month(filepath, data.source_year, data.source_month)
+                    if folder_name:
+                        destination_dir = os.path.join(target_date_dir, folder_name)
+
+                try:
+                    destination_filename = None
+                    if data.rename_videos and media.media_type == "video":
+                        destination_filename = _build_date_prefixed_filename(filepath, target_date)
+
+                    dest_path = _build_unique_destination(filepath, destination_dir, destination_filename)
+                    os.replace(filepath, dest_path)
+                    media.original_path = dest_path
+                    media.organized_path = dest_path
+                    media.filename = os.path.basename(dest_path)
+                    media.is_organized = True
+                    moved += 1
+                except Exception as exc:
+                    errors.append(f"Erro ao mover {media.filename}: {exc}")
+
+        db.commit()
+    return {
+        "status": "ok",
+        "corrected": corrected,
+        "metadata_written": metadata_written,
+        "moved": moved,
+        "errors": errors,
+    }
 
 
 @router.get("/stats")
-def get_stats(db: Session = Depends(get_db)):
+def get_stats(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Retorna estatísticas gerais do acervo."""
     total = db.query(Media).filter(Media.is_duplicate == False).count()
     images = db.query(Media).filter(Media.media_type == "image", Media.is_duplicate == False).count()
@@ -150,8 +542,137 @@ def get_stats(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/sync/manifest")
+def get_sync_manifest(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    since: Optional[datetime.datetime] = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(200, ge=1, le=1000),
+    size: int = Query(300, ge=50, le=800),
+    db: Session = Depends(get_db),
+):
+    """Retorna manifesto incremental para clientes offline sincronizarem thumbnails."""
+    query = db.query(Media).filter(Media.is_duplicate == False, Media.is_organized == True)
+    if since:
+        query = query.filter(Media.updated_at > since)
+
+    total = query.count()
+    media_items = (
+        query.order_by(Media.updated_at.asc(), Media.id.asc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    base_url = str(request.base_url).rstrip("/")
+    server_time = datetime.datetime.utcnow()
+    items = [_media_sync_item(media, base_url, size) for media in media_items]
+
+    return {
+        "server_time": server_time.isoformat(),
+        "sync_token": server_time.isoformat(),
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": (total + per_page - 1) // per_page,
+        "has_more": page * per_page < total,
+        "thumbnail_size": size,
+        "items": items,
+    }
+
+
+@router.post("/thumbnails/warmup")
+def warmup_thumbnail_cache(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(100, ge=1, le=500),
+    size: int = Query(300, ge=50, le=800),
+    db: Session = Depends(get_db),
+):
+    """Pré-gera thumbnails em lote para melhorar performance da galeria."""
+    import threading
+
+    media_items = (
+        db.query(Media)
+        .filter(Media.is_duplicate == False, Media.is_organized == True)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    cache_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    generated = 0
+    skipped = 0
+    errors = []
+
+    for media in media_items:
+        cache_path = os.path.join(cache_dir, f"{media.id}_{size}.jpg")
+
+        # Verifica se já existe
+        if os.path.exists(cache_path):
+            try:
+                filepath = media.organized_path or media.original_path
+                if os.path.exists(filepath):
+                    source_mtime = os.path.getmtime(filepath)
+                    cache_mtime = os.path.getmtime(cache_path)
+                    if cache_mtime >= source_mtime:
+                        skipped += 1
+                        continue
+            except Exception:
+                pass
+
+        try:
+            filepath = media.organized_path or media.original_path
+            if not os.path.exists(filepath):
+                errors.append(f"{media.id}: arquivo não encontrado")
+                continue
+
+            if media.media_type == "image":
+                from PIL import Image
+
+                img = Image.open(filepath)
+                img.thumbnail((size, size))
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(cache_path, format="JPEG", quality=80)
+                generated += 1
+            else:
+                # Para vídeos, gera thumbnail
+                from app.services.organizer import generate_video_thumbnail
+                from PIL import Image
+
+                thumb_tmp = cache_path + ".tmp"
+                generate_video_thumbnail(filepath, thumb_tmp)
+
+                if os.path.exists(thumb_tmp):
+                    img = Image.open(thumb_tmp)
+                    img.thumbnail((size, size))
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    img.save(cache_path, format="JPEG", quality=80)
+                    os.unlink(thumb_tmp)
+                    generated += 1
+        except Exception as e:
+            errors.append(f"{media.id}: {str(e)[:100]}")
+
+    return {
+        "status": "ok",
+        "generated": generated,
+        "skipped": skipped,
+        "errors": errors,
+        "page": page,
+        "per_page": per_page,
+        "page_count": len(media_items),
+    }
+
+
 @router.delete("/duplicates/all")
-def delete_all_duplicates(db: Session = Depends(get_db)):
+def delete_all_duplicates(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Move TODAS as duplicatas para .trash (mantém os originais).
     """
@@ -252,8 +773,42 @@ def _media_summary(media: Media) -> dict:
     }
 
 
+def _media_sync_item(media: Media, base_url: str, thumbnail_size: int) -> dict:
+    filepath = media.organized_path or media.original_path or ""
+    folder = None
+    if filepath:
+        folder = os.path.dirname(os.path.normpath(filepath))
+
+    return {
+        "id": media.id,
+        "filename": media.filename,
+        "media_type": media.media_type,
+        "mime_type": media.mime_type,
+        "date_taken": media.date_taken.isoformat() if media.date_taken else None,
+        "year": media.date_taken.year if media.date_taken else None,
+        "month": media.date_taken.month if media.date_taken else None,
+        "width": media.width,
+        "height": media.height,
+        "duration_seconds": media.duration_seconds,
+        "updated_at": media.updated_at.isoformat() if media.updated_at else None,
+        "sha256_hash": media.sha256_hash,
+        "ai_description": media.ai_description,
+        "ai_location": media.ai_location,
+        "ai_scene_type": media.ai_scene_type,
+        "ai_objects": media.ai_objects or [],
+        "folder": folder,
+        "thumbnail_url": f"{base_url}/api/media/{media.id}/thumbnail?size={thumbnail_size}",
+        "file_url": f"{base_url}/api/media/{media.id}/file",
+        "stream_url": f"{base_url}/api/media/{media.id}/stream" if media.media_type == "video" else None,
+    }
+
+
 @router.get("/{media_id}")
-def get_media(media_id: int, db: Session = Depends(get_db)):
+def get_media(
+    media_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Retorna detalhes de uma mídia."""
     media = db.query(Media).get(media_id)
     if not media:
@@ -310,7 +865,7 @@ def get_media_file(media_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{media_id}/thumbnail")
 def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Session = Depends(get_db)):
-    """Retorna thumbnail da mídia."""
+    """Retorna thumbnail da mídia com cache persistente."""
     media = db.query(Media).get(media_id)
     if not media:
         raise HTTPException(status_code=404, detail="Mídia não encontrada")
@@ -319,44 +874,70 @@ def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Sess
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
-    if media.media_type == "image":
-        from PIL import Image
-        import io
+    # Diretório de cache de thumbnails
+    cache_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{media_id}_{size}.jpg")
 
-        img = Image.open(filepath)
-        img.thumbnail((size, size))
+    # Verifica se cache ainda é válido (mesmo mtime do arquivo)
+    cache_valid = False
+    if os.path.exists(cache_path):
+        try:
+            source_mtime = os.path.getmtime(filepath)
+            cache_mtime = os.path.getmtime(cache_path)
+            # Cache válido se foi modificado depois do arquivo original
+            cache_valid = cache_mtime >= source_mtime
+        except Exception:
+            cache_valid = False
 
-        # Converte para JPEG
-        buffer = io.BytesIO()
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.save(buffer, format="JPEG", quality=80)
-        buffer.seek(0)
+    # Se cache não está válido, regenera
+    if not cache_valid:
+        try:
+            if media.media_type == "image":
+                from PIL import Image
 
-        return StreamingResponse(buffer, media_type="image/jpeg")
-    else:
-        # Para vídeos, tenta usar thumbnail pré-gerado
-        from app.services.organizer import generate_video_thumbnail
-        thumb_dir = os.path.join(settings.organized_dir, ".thumbnails", "videos")
-        thumb_path = os.path.join(thumb_dir, f"{Path(media.filename).stem}.jpg")
+                img = Image.open(filepath)
+                img.thumbnail((size, size))
 
-        # Se não existe, gera agora
-        if not os.path.exists(thumb_path):
-            generate_video_thumbnail(filepath, thumb_path)
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(cache_path, format="JPEG", quality=80)
+            else:
+                # Para vídeos, gera thumbnail
+                from app.services.organizer import generate_video_thumbnail
+                from PIL import Image
 
-        if os.path.exists(thumb_path):
-            from PIL import Image
-            import io
-            img = Image.open(thumb_path)
-            img.thumbnail((size, size))
-            buffer = io.BytesIO()
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            img.save(buffer, format="JPEG", quality=80)
-            buffer.seek(0)
-            return StreamingResponse(buffer, media_type="image/jpeg")
+                # Gera thumbnail temporário de vídeo
+                thumb_tmp = cache_path + ".tmp"
+                generate_video_thumbnail(filepath, thumb_tmp)
 
-        raise HTTPException(status_code=404, detail="Thumbnail não disponível para este vídeo")
+                if os.path.exists(thumb_tmp):
+                    img = Image.open(thumb_tmp)
+                    img.thumbnail((size, size))
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    img.save(cache_path, format="JPEG", quality=80)
+                    os.unlink(thumb_tmp)
+                else:
+                    raise HTTPException(status_code=404, detail="Thumbnail não disponível para este vídeo")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Erro ao gerar thumbnail para {media_id}: {e}")
+            raise HTTPException(status_code=500, detail="Erro ao gerar thumbnail")
+
+    # Retorna arquivo do cache com headers de cache HTTP
+    if os.path.exists(cache_path):
+        return FileResponse(
+            cache_path,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "public, max-age=31536000",  # 1 ano
+                "ETag": f'"{media_id}_{size}_{int(os.path.getmtime(cache_path))}"'
+            }
+        )
+
+    raise HTTPException(status_code=404, detail="Thumbnail não disponível")
 
 
 @router.get("/{media_id}/transcode-status")
@@ -625,7 +1206,11 @@ def _media_to_dict(media: Media, include_details: bool = False) -> dict:
 
 
 @router.delete("/{media_id}")
-def delete_media(media_id: int, db: Session = Depends(get_db)):
+def delete_media(
+    media_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Exclui uma mídia: move o arquivo para trash e remove do banco.
     Para arquivos em library_folders, requer allow_library_modify = true.
