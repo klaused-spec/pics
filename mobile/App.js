@@ -243,6 +243,7 @@ export default function App() {
       setSyncToken(parsed.syncToken || null)
       if (parsed.slideSeconds) setSlideSeconds(parsed.slideSeconds)
       if (parsed.token) {
+        loadAlbums(parsed.token, parsed.baseUrl || baseUrl)
         syncLibrary(parsed.token, parsed.baseUrl || baseUrl, parsed.syncToken || null, cachedItems)
       }
     }
@@ -260,9 +261,27 @@ export default function App() {
     await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
   }
 
-  async function persistAlbums(nextAlbums) {
-    setAlbums(nextAlbums)
+  async function cacheAlbums(nextAlbums) {
     await AsyncStorage.setItem(ALBUMS_KEY, JSON.stringify(nextAlbums)).catch(() => {})
+  }
+
+  async function loadAlbums(activeToken = token, activeBaseUrl = baseUrl) {
+    if (!activeToken) return
+    try {
+      const url = apiUrl(activeBaseUrl, '/albums/?include_items=true')
+      const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) })
+      if (!response.ok) throw new Error(`Álbuns falharam (${response.status})`)
+      const data = await response.json()
+      const mapped = (Array.isArray(data) ? data : []).map((album) => ({
+        id: String(album.id),
+        name: album.name,
+        itemIds: (album.item_ids || []).map((id) => Number(id)),
+      }))
+      setAlbums(mapped)
+      await cacheAlbums(mapped)
+    } catch (_) {
+      // Mantém o cache local quando estiver offline
+    }
   }
 
   function createAlbum() {
@@ -270,36 +289,76 @@ export default function App() {
     setShowNewAlbum(true)
   }
 
-  function confirmCreateAlbum() {
+  async function confirmCreateAlbum() {
     const trimmed = newAlbumName.trim() || `Álbum ${albums.length + 1}`
-    persistAlbums([...albums, { id: `${Date.now()}`, name: trimmed, itemIds: [] }])
+    const mediaIds = selectMode ? Array.from(selectedIds) : []
     setShowNewAlbum(false)
     setNewAlbumName('')
+    try {
+      const url = apiUrl(baseUrl, '/albums/')
+      const response = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed, media_ids: mediaIds }),
+      })
+      if (!response.ok) throw new Error(`Falha ao criar álbum (${response.status})`)
+      if (selectMode) {
+        setSelectMode(false)
+        setSelectedIds(new Set())
+      }
+      await loadAlbums()
+    } catch (error) {
+      Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, '/albums/')))
+    }
   }
 
-  function addSelectedToAlbum(albumId) {
+  async function addSelectedToAlbum(albumId) {
     const ids = Array.from(selectedIds)
-    const nextAlbums = albums.map((album) => {
-      if (album.id !== albumId) return album
-      const merged = Array.from(new Set([...album.itemIds, ...ids]))
-      return { ...album, itemIds: merged }
-    })
-    persistAlbums(nextAlbums)
-    setSelectMode(false)
-    setSelectedIds(new Set())
+    if (!ids.length) return
+    try {
+      const url = apiUrl(baseUrl, `/albums/${albumId}/media`)
+      const response = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ media_ids: ids }),
+      })
+      if (!response.ok) throw new Error(`Falha ao adicionar (${response.status})`)
+      setSelectMode(false)
+      setSelectedIds(new Set())
+      await loadAlbums()
+    } catch (error) {
+      Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, `/albums/${albumId}/media`)))
+    }
   }
 
-  function removeFromAlbum(albumId, itemId) {
-    const nextAlbums = albums.map((album) => album.id === albumId ? { ...album, itemIds: album.itemIds.filter((id) => id !== itemId) } : album)
-    persistAlbums(nextAlbums)
+  async function removeFromAlbum(albumId, itemId) {
+    try {
+      const url = apiUrl(baseUrl, `/albums/${albumId}/media`)
+      const response = await fetchWithTimeout(url, {
+        method: 'DELETE',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ media_ids: [itemId] }),
+      })
+      if (!response.ok) throw new Error(`Falha ao remover (${response.status})`)
+      await loadAlbums()
+    } catch (error) {
+      Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, `/albums/${albumId}/media`)))
+    }
   }
 
   function deleteAlbum(albumId) {
-    Alert.alert('Excluir álbum', 'Remover este álbum? As fotos continuam na biblioteca.', [
+    Alert.alert('Excluir álbum', 'Remover este álbum para todos? As fotos continuam na biblioteca.', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Excluir', style: 'destructive', onPress: () => {
-        persistAlbums(albums.filter((album) => album.id !== albumId))
-        if (openAlbumId === albumId) setOpenAlbumId(null)
+      { text: 'Excluir', style: 'destructive', onPress: async () => {
+        try {
+          const url = apiUrl(baseUrl, `/albums/${albumId}`)
+          const response = await fetchWithTimeout(url, { method: 'DELETE', headers: authHeaders(token) })
+          if (!response.ok && response.status !== 204) throw new Error(`Falha ao excluir (${response.status})`)
+          if (openAlbumId === albumId) setOpenAlbumId(null)
+          await loadAlbums()
+        } catch (error) {
+          Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, `/albums/${albumId}`)))
+        }
       } },
     ])
   }
@@ -432,6 +491,7 @@ export default function App() {
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
       const cacheText = nextItems.length > cachedCount ? `, ${cachedCount} em cache local` : ''
       setSyncStatus(`Lista pronta: ${nextItems.length} itens${cacheText}`)
+      loadAlbums(activeToken, activeBaseUrl)
     } catch (error) {
       Alert.alert('Sync', error.message)
       setSyncStatus('Sync interrompido')
@@ -847,20 +907,27 @@ export default function App() {
           </Pressable>
           <Text style={styles.selectionText}>{selectedIds.size} selecionada(s)</Text>
           <Pressable
+            style={styles.selectionNew}
+            onPress={() => {
+              if (!selectedIds.size) return
+              createAlbum()
+            }}
+          >
+            <Text style={styles.selectionNewText}>＋ Novo</Text>
+          </Pressable>
+          <Pressable
             style={styles.selectionAction}
             onPress={() => {
               if (!selectedIds.size) return
-              if (!albums.length) {
-                Alert.alert('Álbuns', 'Crie um álbum primeiro na aba Álbuns.')
-                return
-              }
-              Alert.alert('Adicionar ao álbum', 'Escolha o álbum', [
+              const buttons = [
+                { text: '＋ Criar novo álbum', onPress: () => createAlbum() },
                 ...albums.map((album) => ({ text: album.name, onPress: () => addSelectedToAlbum(album.id) })),
                 { text: 'Cancelar', style: 'cancel' },
-              ])
+              ]
+              Alert.alert('Adicionar ao álbum', 'Escolha um álbum ou crie um novo', buttons)
             }}
           >
-            <Text style={styles.selectionActionText}>Adicionar ao álbum</Text>
+            <Text style={styles.selectionActionText}>Adicionar</Text>
           </Pressable>
         </View>
       )}
@@ -1337,6 +1404,8 @@ const styles = StyleSheet.create({
   selectMarkText: { color: '#ffffff', fontSize: 12, fontWeight: '900' },
   selectionBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#0f172a' },
   selectionText: { color: '#ffffff', fontWeight: '800', flex: 1 },
+  selectionNew: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#1e293b' },
+  selectionNewText: { color: '#93c5fd', fontWeight: '800' },
   selectionAction: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#2563eb' },
   selectionActionText: { color: '#ffffff', fontWeight: '800' },
   selectionCancel: { paddingHorizontal: 12, paddingVertical: 8 },
