@@ -780,11 +780,13 @@ export default function App() {
         <Animated.View style={[styles.scrubberThumb, { transform: [{ translateY: thumbTop }] }]} pointerEvents="none">
           <Text style={styles.scrubberThumbText}>⋮</Text>
         </Animated.View>
-        {scrubbing && !!scrubLabel && (
-          <Animated.View style={[styles.scrubberBubble, { transform: [{ translateY: thumbTop }] }]} pointerEvents="none">
-            <Text style={styles.scrubberBubbleText}>{scrubLabel}</Text>
-          </Animated.View>
-        )}
+      </View>
+    )}
+    {scrubbing && !!scrubLabel && (
+      <View style={styles.scrubOverlay} pointerEvents="none">
+        <View style={styles.scrubOverlayCard}>
+          <Text style={styles.scrubOverlayText}>{scrubLabel}</Text>
+        </View>
       </View>
     )}
     </View>
@@ -1305,8 +1307,9 @@ const styles = StyleSheet.create({
   scrubberTrack: { position: 'absolute', right: 20, top: SCRUB_THUMB / 2, bottom: SCRUB_THUMB / 2, width: 4, borderRadius: 2, backgroundColor: '#d7deea' },
   scrubberThumb: { position: 'absolute', right: 6, top: 0, width: 32, height: SCRUB_THUMB, borderRadius: 16, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   scrubberThumbText: { color: '#ffffff', fontSize: 16, fontWeight: '900', letterSpacing: 1 },
-  scrubberBubble: { position: 'absolute', right: 46, top: 0, height: SCRUB_THUMB, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#0f172a' },
-  scrubberBubbleText: { color: '#ffffff', fontWeight: '900', fontSize: 15 },
+  scrubOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center' },
+  scrubOverlayCard: { paddingHorizontal: 32, paddingVertical: 22, borderRadius: 24, backgroundColor: 'rgba(15,23,42,0.72)', minWidth: 200, alignItems: 'center' },
+  scrubOverlayText: { color: '#ffffff', fontWeight: '900', fontSize: 30, letterSpacing: 0.5, textAlign: 'center' },
 
   // Selection
   selectMark: { position: 'absolute', right: 8, top: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#ffffff', backgroundColor: 'rgba(15,23,42,0.35)', alignItems: 'center', justifyContent: 'center' },
