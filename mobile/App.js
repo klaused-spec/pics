@@ -591,6 +591,12 @@ export default function App() {
     const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
     const uri = await downloadWithAuth(url, destination, token)
     markFullCached(item.id)
+    // Todo arquivo baixado offline também vai para a galeria (álbum "Pics").
+    try {
+      await saveUriToGallery(uri)
+    } catch (_) {
+      // Sem permissão ou falha na galeria não impede o uso offline dentro do app.
+    }
     return uri
   }
 
