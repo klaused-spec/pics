@@ -21,6 +21,7 @@ const SETTINGS_KEY = 'pics_mobile_settings'
 const ITEMS_KEY = 'pics_mobile_items'
 const THUMB_DIR = `${FileSystem.documentDirectory}thumbs/`
 const FULL_DIR = `${FileSystem.documentDirectory}full/`
+const ITEM_CACHE_LIMIT = 5000
 
 function normalizeBaseUrl(value) {
   const trimmed = value.trim()
@@ -59,6 +60,20 @@ function authHeaders(token) {
 async function ensureDirectories() {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true })
   await FileSystem.makeDirectoryAsync(FULL_DIR, { intermediates: true })
+}
+
+async function persistItemCache(nextItems) {
+  const cachedItems = nextItems.slice(0, ITEM_CACHE_LIMIT)
+  try {
+    await AsyncStorage.removeItem(ITEMS_KEY)
+    if (cachedItems.length) {
+      await AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(cachedItems))
+    }
+  } catch (_) {
+    await AsyncStorage.removeItem(ITEMS_KEY).catch(() => {})
+    return 0
+  }
+  return cachedItems.length
 }
 
 function extensionFromContent(item) {
@@ -227,9 +242,10 @@ export default function App() {
       })
       setItems(nextItems)
       setSyncToken(nextSyncToken)
-      await AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(nextItems))
+      const cachedCount = await persistItemCache(nextItems)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
-      setSyncStatus(`Lista pronta: ${nextItems.length} itens`)
+      const cacheText = nextItems.length > cachedCount ? `, ${cachedCount} em cache local` : ''
+      setSyncStatus(`Lista pronta: ${nextItems.length} itens${cacheText}`)
     } catch (error) {
       Alert.alert('Sync', error.message)
       setSyncStatus('Sync interrompido')
@@ -241,7 +257,7 @@ export default function App() {
   function markThumbnailFailed(id) {
     setItems((currentItems) => {
       const nextItems = currentItems.map((item) => item.id === id ? { ...item, thumbnail_failed: true } : item)
-      AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(nextItems)).catch(() => {})
+      persistItemCache(nextItems).catch(() => {})
       return nextItems
     })
   }
