@@ -12,13 +12,17 @@ import {
   Image,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   SafeAreaView,
+  StatusBar as RNStatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native'
+
+const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? RNStatusBar.currentHeight || 24 : 0
 
 const SETTINGS_KEY = 'pics_mobile_settings'
 const ITEMS_KEY = 'pics_mobile_items'
@@ -27,6 +31,7 @@ const THUMB_DIR = `${FileSystem.documentDirectory}thumbs/`
 const FULL_DIR = `${FileSystem.documentDirectory}full/`
 const ITEM_CACHE_LIMIT = 5000
 const DEFAULT_SLIDE_SECONDS = 5
+const SCRUB_THUMB = 44
 
 function normalizeBaseUrl(value) {
   const trimmed = value.trim()
@@ -173,15 +178,16 @@ export default function App() {
   const [fullProgress, setFullProgress] = useState(0)
   const [scrubLabel, setScrubLabel] = useState('')
   const [scrubbing, setScrubbing] = useState(false)
-  const [scrubRatio, setScrubRatio] = useState(0)
   const listRef = useRef(null)
   const scrubTrackRef = useRef({ y: 0, height: 0 })
   const anchorsRef = useRef([])
+  const scrubbingRef = useRef(false)
   const listMetricsRef = useRef({ offset: 0, contentHeight: 1, viewHeight: 1 })
+  const thumbTop = useRef(new Animated.Value(0)).current
+  const trackUsableRef = useRef(1)
 
-  const [treeYear, setTreeYear] = useState(null)
-  const [treeMonth, setTreeMonth] = useState(null)
-  const [treeFolder, setTreeFolder] = useState(null)
+  const [treeExpanded, setTreeExpanded] = useState({})
+  const [treeSelected, setTreeSelected] = useState(null)
 
   const [albums, setAlbums] = useState([])
   const [openAlbumId, setOpenAlbumId] = useState(null)
@@ -591,30 +597,47 @@ export default function App() {
     return { rows, anchors, total: visibleItems.length }
   }, [cachedFullIds, deferredSearchQuery, items, mediaFilter, offlineOnly])
 
-  const tree = useMemo(() => {
-    const years = new Map()
+  const treeMonths = useMemo(() => {
+    const groups = new Map()
     for (const item of items) {
       const year = item.year || 0
       const month = item.month || 0
+      const key = `${year}-${month}`
+      if (!groups.has(key)) groups.set(key, { key, year, month, count: 0, folders: new Map(), items: [] })
+      const node = groups.get(key)
+      node.count += 1
+      node.items.push(item)
       const folder = item.folder || ''
-      if (!years.has(year)) years.set(year, { count: 0, months: new Map() })
-      const yearNode = years.get(year)
-      yearNode.count += 1
-      if (!yearNode.months.has(month)) yearNode.months.set(month, { count: 0, folders: new Map() })
-      const monthNode = yearNode.months.get(month)
-      monthNode.count += 1
-      if (!monthNode.folders.has(folder)) monthNode.folders.set(folder, [])
-      monthNode.folders.get(folder).push(item)
+      if (folder) {
+        if (!node.folders.has(folder)) node.folders.set(folder, [])
+        node.folders.get(folder).push(item)
+      }
     }
-    return years
+    const list = Array.from(groups.values())
+    list.sort((a, b) => (b.year - a.year) || (b.month - a.month))
+    for (const node of list) {
+      node.folderList = Array.from(node.folders.entries())
+        .map(([name, folderItems]) => ({ name, items: folderItems }))
+        .sort((a, b) => folderName(a.name).localeCompare(folderName(b.name)))
+    }
+    return list
   }, [items])
 
   const treeItems = useMemo(() => {
-    if (treeYear == null || treeMonth == null || treeFolder == null) return []
-    const yearNode = tree.get(treeYear)
-    const monthNode = yearNode?.months.get(treeMonth)
-    return monthNode?.folders.get(treeFolder) || []
-  }, [tree, treeYear, treeMonth, treeFolder])
+    if (!treeSelected) return []
+    const node = treeMonths.find((m) => m.key === treeSelected.key)
+    if (!node) return []
+    if (treeSelected.folder == null) return node.items
+    return node.folders.get(treeSelected.folder) || []
+  }, [treeMonths, treeSelected])
+
+  const treeSelectedTitle = useMemo(() => {
+    if (!treeSelected) return ''
+    const node = treeMonths.find((m) => m.key === treeSelected.key)
+    if (!node) return ''
+    const base = `${node.month ? MONTH_NAMES[node.month - 1] : 'Sem mês'} ${node.year || ''}`.trim()
+    return treeSelected.folder != null ? `${base} · ${folderName(treeSelected.folder)}` : base
+  }, [treeMonths, treeSelected])
 
   function renderTile(item) {
     const isSelected = selectedIds.has(item.id)
@@ -647,6 +670,13 @@ export default function App() {
 
   anchorsRef.current = gallery.anchors
 
+  function ratioLabel(ratio) {
+    const anchors = anchorsRef.current
+    if (!anchors.length) return ''
+    const index = Math.min(anchors.length - 1, Math.max(0, Math.round(ratio * (anchors.length - 1))))
+    return anchors[index]?.title || ''
+  }
+
   function handleListScroll(event) {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
     listMetricsRef.current = {
@@ -654,23 +684,23 @@ export default function App() {
       contentHeight: contentSize.height,
       viewHeight: layoutMeasurement.height,
     }
-    if (scrubbing) return
+    if (scrubbingRef.current) return
     const scrollable = Math.max(1, contentSize.height - layoutMeasurement.height)
-    setScrubRatio(Math.max(0, Math.min(1, contentOffset.y / scrollable)))
+    const ratio = Math.max(0, Math.min(1, contentOffset.y / scrollable))
+    thumbTop.setValue(ratio * trackUsableRef.current)
   }
 
-  function scrubToRatio(pageY) {
+  function scrubToPageY(pageY) {
     const { y, height } = scrubTrackRef.current
-    const anchors = anchorsRef.current
     if (!height) return
-    const ratio = Math.max(0, Math.min(1, (pageY - y) / height))
-    setScrubRatio(ratio)
-    if (!anchors.length) return
-    const index = Math.min(anchors.length - 1, Math.round(ratio * (anchors.length - 1)))
-    const anchor = anchors[index]
-    if (!anchor) return
-    setScrubLabel(anchor.title)
-    listRef.current?.scrollToIndex({ index: anchor.rowIndex, animated: false, viewPosition: 0 })
+    const usable = trackUsableRef.current
+    const local = Math.max(0, Math.min(usable, pageY - y - SCRUB_THUMB / 2))
+    const ratio = usable > 0 ? local / usable : 0
+    thumbTop.setValue(local)
+    setScrubLabel(ratioLabel(ratio))
+    const { contentHeight, viewHeight } = listMetricsRef.current
+    const scrollable = Math.max(1, contentHeight - viewHeight)
+    listRef.current?.scrollToOffset({ offset: ratio * scrollable, animated: false })
   }
 
   const scrubViewRef = useRef(null)
@@ -678,6 +708,7 @@ export default function App() {
   function measureTrack() {
     scrubViewRef.current?.measureInWindow((x, y, width, height) => {
       scrubTrackRef.current = { y, height }
+      trackUsableRef.current = Math.max(1, height - SCRUB_THUMB)
     })
   }
 
@@ -685,16 +716,24 @@ export default function App() {
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (evt) => {
         measureTrack()
+        scrubbingRef.current = true
         setScrubbing(true)
-        scrubToRatio(evt.nativeEvent.pageY)
+        scrubToPageY(evt.nativeEvent.pageY)
       },
       onPanResponderMove: (evt) => {
-        scrubToRatio(evt.nativeEvent.pageY)
+        scrubToPageY(evt.nativeEvent.pageY)
       },
-      onPanResponderRelease: () => setScrubbing(false),
-      onPanResponderTerminate: () => setScrubbing(false),
+      onPanResponderRelease: () => {
+        scrubbingRef.current = false
+        setScrubbing(false)
+      },
+      onPanResponderTerminate: () => {
+        scrubbingRef.current = false
+        setScrubbing(false)
+      },
     }),
   ).current
 
@@ -738,13 +777,13 @@ export default function App() {
         {...scrubResponder.panHandlers}
       >
         <View style={styles.scrubberTrack} pointerEvents="none" />
-        <View style={[styles.scrubberThumb, { top: `${scrubRatio * 92}%` }]} pointerEvents="none">
-          <Text style={styles.scrubberThumbText}>⋮⋮</Text>
-        </View>
+        <Animated.View style={[styles.scrubberThumb, { transform: [{ translateY: thumbTop }] }]} pointerEvents="none">
+          <Text style={styles.scrubberThumbText}>⋮</Text>
+        </Animated.View>
         {scrubbing && !!scrubLabel && (
-          <View style={[styles.scrubberBubble, { top: `${scrubRatio * 92}%` }]} pointerEvents="none">
+          <Animated.View style={[styles.scrubberBubble, { transform: [{ translateY: thumbTop }] }]} pointerEvents="none">
             <Text style={styles.scrubberBubbleText}>{scrubLabel}</Text>
-          </View>
+          </Animated.View>
         )}
       </View>
     )}
@@ -961,93 +1000,69 @@ export default function App() {
         </View>
       )}
 
-      {activeTab === 'tree' && (
+      {activeTab === 'tree' && !treeSelected && (
         <View style={styles.tabContent}>
-          {treeYear == null && (
-            <>
-              <View style={styles.topBar}>
-                <Text style={styles.topTitle}>Pastas</Text>
-              </View>
-              <FlatList
-                data={Array.from(tree.keys()).sort((a, b) => b - a)}
-                keyExtractor={(year) => `year-${year}`}
-                contentContainerStyle={{ paddingBottom: 24 }}
-                ListEmptyComponent={<View style={styles.emptyState}><Text style={styles.emptyEmoji}>📂</Text><Text style={styles.emptyTitle}>Sem dados</Text><Text style={styles.emptyText}>Sincronize a biblioteca primeiro.</Text></View>}
-                renderItem={({ item: year }) => (
-                  <Pressable style={styles.treeRow} onPress={() => setTreeYear(year)}>
-                    <Text style={styles.treeIcon}>📅</Text>
-                    <Text style={styles.treeLabel}>{year || 'Sem data'}</Text>
-                    <Text style={styles.treeCount}>{tree.get(year).count}</Text>
-                    <Text style={styles.treeChevron}>›</Text>
-                  </Pressable>
-                )}
-              />
-            </>
-          )}
-
-          {treeYear != null && treeMonth == null && (
-            <>
-              <View style={styles.albumHeaderBar}>
-                <Pressable style={styles.backButton} onPress={() => setTreeYear(null)}><Text style={styles.backButtonText}>← Anos</Text></Pressable>
-                <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]}>{treeYear || 'Sem data'}</Text>
-              </View>
-              <FlatList
-                data={Array.from(tree.get(treeYear)?.months.keys() || []).sort((a, b) => b - a)}
-                keyExtractor={(month) => `month-${month}`}
-                contentContainerStyle={{ paddingBottom: 24, paddingTop: 8 }}
-                renderItem={({ item: month }) => (
-                  <Pressable style={styles.treeRow} onPress={() => setTreeMonth(month)}>
+          <View style={styles.topBar}>
+            <Text style={styles.topTitle}>Pastas</Text>
+          </View>
+          <FlatList
+            data={treeMonths}
+            keyExtractor={(node) => node.key}
+            contentContainerStyle={{ paddingBottom: 24, paddingHorizontal: 12 }}
+            ListEmptyComponent={<View style={styles.emptyState}><Text style={styles.emptyEmoji}>📂</Text><Text style={styles.emptyTitle}>Sem dados</Text><Text style={styles.emptyText}>Sincronize a biblioteca primeiro.</Text></View>}
+            renderItem={({ item: node }) => {
+              const expanded = !!treeExpanded[node.key]
+              const hasFolders = node.folderList.length > 0
+              return (
+                <View>
+                  <Pressable
+                    style={styles.treeRow}
+                    onPress={() => {
+                      if (hasFolders) setTreeExpanded((prev) => ({ ...prev, [node.key]: !prev[node.key] }))
+                      else setTreeSelected({ key: node.key, folder: null })
+                    }}
+                  >
+                    <Text style={styles.treeChevron}>{hasFolders ? (expanded ? '▾' : '▸') : '·'}</Text>
                     <Text style={styles.treeIcon}>🗓️</Text>
-                    <Text style={styles.treeLabel}>{month ? MONTH_NAMES[month - 1] : 'Sem mês'}</Text>
-                    <Text style={styles.treeCount}>{tree.get(treeYear).months.get(month).count}</Text>
-                    <Text style={styles.treeChevron}>›</Text>
+                    <Text style={styles.treeLabel} numberOfLines={1}>{node.month ? MONTH_NAMES[node.month - 1] : 'Sem mês'} {node.year || ''}</Text>
+                    <Text style={styles.treeCount}>{node.count}</Text>
+                    <Pressable hitSlop={8} style={styles.treeOpen} onPress={() => setTreeSelected({ key: node.key, folder: null })}>
+                      <Text style={styles.treeOpenText}>Ver</Text>
+                    </Pressable>
                   </Pressable>
-                )}
-              />
-            </>
-          )}
+                  {expanded && node.folderList.map((sub) => (
+                    <Pressable key={sub.name} style={styles.treeSubRow} onPress={() => setTreeSelected({ key: node.key, folder: sub.name })}>
+                      <Text style={styles.treeBranch}>└</Text>
+                      <Text style={styles.treeIcon}>📁</Text>
+                      <Text style={styles.treeSubLabel} numberOfLines={1}>{folderName(sub.name)}</Text>
+                      <Text style={styles.treeCount}>{sub.items.length}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )
+            }}
+          />
+        </View>
+      )}
 
-          {treeYear != null && treeMonth != null && treeFolder == null && (
-            <>
-              <View style={styles.albumHeaderBar}>
-                <Pressable style={styles.backButton} onPress={() => setTreeMonth(null)}><Text style={styles.backButtonText}>← Meses</Text></Pressable>
-                <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]}>{treeMonth ? MONTH_NAMES[treeMonth - 1] : 'Sem mês'} {treeYear || ''}</Text>
+      {activeTab === 'tree' && treeSelected && (
+        <View style={styles.tabContent}>
+          <View style={styles.albumHeaderBar}>
+            <Pressable style={styles.backButton} onPress={() => setTreeSelected(null)}><Text style={styles.backButtonText}>← Pastas</Text></Pressable>
+            <Text style={[styles.topTitle, { flex: 1, fontSize: 18 }]} numberOfLines={1}>{treeSelectedTitle}</Text>
+          </View>
+          <FlatList
+            data={chunkItems(treeItems, 3)}
+            keyExtractor={(_, index) => `tree-row-${index}`}
+            contentContainerStyle={styles.grid}
+            ListEmptyComponent={<View style={styles.emptyState}><Text style={styles.emptyEmoji}>🖼️</Text><Text style={styles.emptyTitle}>Vazio</Text></View>}
+            renderItem={({ item: rowItems }) => (
+              <View style={styles.tileRow}>
+                {rowItems.map(renderTile)}
+                {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
               </View>
-              <FlatList
-                data={Array.from(tree.get(treeYear)?.months.get(treeMonth)?.folders.entries() || [])}
-                keyExtractor={([folder]) => `folder-${folder}`}
-                contentContainerStyle={{ paddingBottom: 24, paddingTop: 8 }}
-                renderItem={({ item: [folder, folderItems] }) => (
-                  <Pressable style={styles.treeRow} onPress={() => setTreeFolder(folder)}>
-                    <Text style={styles.treeIcon}>📁</Text>
-                    <Text style={styles.treeLabel} numberOfLines={1}>{folderName(folder)}</Text>
-                    <Text style={styles.treeCount}>{folderItems.length}</Text>
-                    <Text style={styles.treeChevron}>›</Text>
-                  </Pressable>
-                )}
-              />
-            </>
-          )}
-
-          {treeYear != null && treeMonth != null && treeFolder != null && (
-            <>
-              <View style={styles.albumHeaderBar}>
-                <Pressable style={styles.backButton} onPress={() => setTreeFolder(null)}><Text style={styles.backButtonText}>← Pastas</Text></Pressable>
-                <Text style={[styles.topTitle, { flex: 1, fontSize: 20 }]} numberOfLines={1}>{folderName(treeFolder)}</Text>
-              </View>
-              <FlatList
-                data={chunkItems(treeItems, 3)}
-                keyExtractor={(_, index) => `tree-row-${index}`}
-                contentContainerStyle={styles.grid}
-                renderItem={({ item: rowItems }) => (
-                  <View style={styles.tileRow}>
-                    {rowItems.map(renderTile)}
-                    {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
-                  </View>
-                )}
-              />
-            </>
-          )}
+            )}
+          />
         </View>
       )}
 
@@ -1130,7 +1145,7 @@ export default function App() {
           ['albums', 'Álbuns', '📁'],
           ['settings', 'Config', '⚙️'],
         ].map(([value, label, icon]) => (
-          <Pressable key={value} style={styles.tabButton} onPress={() => { setActiveTab(value); if (value !== 'albums') setOpenAlbumId(null); if (value !== 'tree') { setTreeYear(null); setTreeMonth(null); setTreeFolder(null) } }}>
+          <Pressable key={value} style={styles.tabButton} onPress={() => { setActiveTab(value); if (value !== 'albums') setOpenAlbumId(null); if (value !== 'tree') setTreeSelected(null) }}>
             <Text style={[styles.tabIcon, activeTab === value && styles.tabIconActive]}>{icon}</Text>
             <Text style={[styles.tabLabel, activeTab === value && styles.tabLabelActive]}>{label}</Text>
           </Pressable>
@@ -1226,7 +1241,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fa' },
+  screen: { flex: 1, backgroundColor: '#f5f7fa', paddingTop: STATUS_BAR_HEIGHT },
   tabContent: { flex: 1 },
 
   // Login
@@ -1286,11 +1301,11 @@ const styles = StyleSheet.create({
   emptyText: { color: '#64748b', textAlign: 'center' },
 
   // Date scrubber
-  scrubber: { position: 'absolute', right: 0, top: 6, bottom: 6, width: 40 },
-  scrubberTrack: { position: 'absolute', right: 18, top: 0, bottom: 0, width: 4, borderRadius: 2, backgroundColor: '#d7deea' },
-  scrubberThumb: { position: 'absolute', right: 6, width: 28, height: 40, borderRadius: 14, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  scrubberThumbText: { color: '#ffffff', fontSize: 12, fontWeight: '900' },
-  scrubberBubble: { position: 'absolute', right: 44, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: '#0f172a' },
+  scrubber: { position: 'absolute', right: 0, top: 6, bottom: 6, width: 44 },
+  scrubberTrack: { position: 'absolute', right: 20, top: SCRUB_THUMB / 2, bottom: SCRUB_THUMB / 2, width: 4, borderRadius: 2, backgroundColor: '#d7deea' },
+  scrubberThumb: { position: 'absolute', right: 6, top: 0, width: 32, height: SCRUB_THUMB, borderRadius: 16, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  scrubberThumbText: { color: '#ffffff', fontSize: 16, fontWeight: '900', letterSpacing: 1 },
+  scrubberBubble: { position: 'absolute', right: 46, top: 0, height: SCRUB_THUMB, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#0f172a' },
   scrubberBubbleText: { color: '#ffffff', fontWeight: '900', fontSize: 15 },
 
   // Selection
@@ -1336,11 +1351,16 @@ const styles = StyleSheet.create({
   stepperValue: { fontSize: 18, fontWeight: '800', color: '#0f172a', minWidth: 90, textAlign: 'center' },
 
   // Tree
-  treeRow: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#eef2f7' },
-  treeIcon: { fontSize: 20, marginRight: 12 },
-  treeLabel: { flex: 1, color: '#0f172a', fontWeight: '700', fontSize: 16 },
-  treeCount: { color: '#64748b', fontWeight: '700', marginRight: 8 },
-  treeChevron: { color: '#94a3b8', fontSize: 20, fontWeight: '900' },
+  treeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, paddingHorizontal: 12, paddingVertical: 12, borderRadius: 10, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#eef2f7' },
+  treeIcon: { fontSize: 18, marginRight: 8 },
+  treeLabel: { flex: 1, color: '#0f172a', fontWeight: '700', fontSize: 15 },
+  treeCount: { color: '#64748b', fontWeight: '700', marginRight: 10 },
+  treeChevron: { color: '#2563eb', fontSize: 16, fontWeight: '900', width: 18, textAlign: 'center', marginRight: 4 },
+  treeOpen: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: '#eff4ff' },
+  treeOpenText: { color: '#2563eb', fontWeight: '800', fontSize: 12 },
+  treeSubRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, marginLeft: 26, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#eef2f7' },
+  treeBranch: { color: '#94a3b8', fontSize: 15, fontWeight: '900', width: 16 },
+  treeSubLabel: { flex: 1, color: '#334155', fontWeight: '600', fontSize: 14 },
 
   // Dialog
   dialogBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
