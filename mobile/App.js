@@ -184,13 +184,12 @@ export default function App() {
   async function syncLibrary(activeToken = token, activeBaseUrl = baseUrl, activeSyncToken = syncToken, seedItems = items) {
     if (!activeToken) return
     setSyncing(true)
-    setSyncStatus('Sincronizando manifesto...')
+    setSyncStatus('Sincronizando lista...')
     try {
       await ensureDirectories()
       let page = 1
       const requestedSince = activeSyncToken
       let nextSyncToken = activeSyncToken
-      let skippedThumbs = 0
       const itemMap = new Map(seedItems.map((item) => [item.id, item]))
 
       while (true) {
@@ -204,32 +203,18 @@ export default function App() {
         const totalPages = Math.max(data.pages, 1)
         const totalItems = data.total || 0
         const processedBeforePage = (page - 1) * data.per_page
-        setSyncStatus(`Thumbs: pagina ${page}/${totalPages} (${Math.min(processedBeforePage, totalItems)}/${totalItems} itens)`)
+        setSyncStatus(`Lista: pagina ${page}/${totalPages} (${Math.min(processedBeforePage + data.items.length, totalItems)}/${totalItems} itens)`)
 
-        for (const [index, item] of data.items.entries()) {
+        for (const item of data.items) {
           const previous = itemMap.get(item.id)
           const localThumb = thumbPath(item)
           const thumbChanged = previous?.updated_at && previous.updated_at !== item.updated_at
           if (thumbChanged) {
             await FileSystem.deleteAsync(localThumb, { idempotent: true })
           }
-          let localThumbnailUri = localThumb
-          let thumbnailFailed = false
-          if (thumbChanged || !(await fileExists(localThumb))) {
-            try {
-              await downloadWithAuth(item.thumbnail_url, localThumb, activeToken)
-            } catch (error) {
-              if (!error.status) throw error
-              skippedThumbs += 1
-              thumbnailFailed = true
-              localThumbnailUri = null
-            }
-          }
+          const localThumbnailUri = !thumbChanged && previous?.local_thumbnail_uri ? previous.local_thumbnail_uri : null
+          const thumbnailFailed = !thumbChanged && previous?.thumbnail_failed ? true : false
           itemMap.set(item.id, { ...item, local_thumbnail_uri: localThumbnailUri, thumbnail_failed: thumbnailFailed })
-          if ((index + 1) % 25 === 0 || index + 1 === data.items.length) {
-            const skippedText = skippedThumbs ? `, ${skippedThumbs} sem thumb` : ''
-            setSyncStatus(`Thumbs: pagina ${page}/${totalPages} (${Math.min(processedBeforePage + index + 1, totalItems)}/${totalItems} itens${skippedText})`)
-          }
         }
 
         nextSyncToken = data.sync_token
@@ -244,13 +229,21 @@ export default function App() {
       setSyncToken(nextSyncToken)
       await AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(nextItems))
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
-      setSyncStatus(`Offline pronto: ${nextItems.length} itens${skippedThumbs ? `, ${skippedThumbs} sem thumb` : ''}`)
+      setSyncStatus(`Lista pronta: ${nextItems.length} itens`)
     } catch (error) {
       Alert.alert('Sync', error.message)
       setSyncStatus('Sync interrompido')
     } finally {
       setSyncing(false)
     }
+  }
+
+  function markThumbnailFailed(id) {
+    setItems((currentItems) => {
+      const nextItems = currentItems.map((item) => item.id === id ? { ...item, thumbnail_failed: true } : item)
+      AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(nextItems)).catch(() => {})
+      return nextItems
+    })
   }
 
   async function openItem(item) {
@@ -315,7 +308,7 @@ export default function App() {
                 <Text style={styles.thumbMissingText}>SEM THUMB</Text>
               </View>
             ) : (
-              <Image source={{ uri: item.local_thumbnail_uri || thumbPath(item) }} style={styles.thumb} />
+              <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} onError={() => markThumbnailFailed(item.id)} />
             )}
             {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
           </Pressable>
