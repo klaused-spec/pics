@@ -67,6 +67,17 @@ function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+function formatDuration(seconds) {
+  const total = Math.round(Number(seconds) || 0)
+  if (total <= 0) return null
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) return m > 0 ? `${h}h${m}min` : `${h}h`
+  if (m > 0) return `${m}min`
+  return `${s}s`
+}
+
 async function ensureDirectories() {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true })
   await FileSystem.makeDirectoryAsync(FULL_DIR, { intermediates: true })
@@ -658,7 +669,11 @@ export default function App() {
           <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} onError={() => markThumbnailFailed(item.id)} />
         )}
         {cachedFullIds.has(item.id) && <Text style={styles.offlineBadge}>OFFLINE</Text>}
-        {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
+        {item.media_type === 'video' && (
+          <View style={styles.videoBadge}>
+            <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
+          </View>
+        )}
         {selectMode && (
           <View style={[styles.selectMark, isSelected && styles.selectMarkActive]}>
             <Text style={styles.selectMarkText}>{isSelected ? '✓' : ''}</Text>
@@ -992,7 +1007,11 @@ export default function App() {
                     ) : (
                       <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} />
                     )}
-                    {item.media_type === 'video' && <Text style={styles.videoBadge}>VIDEO</Text>}
+                    {item.media_type === 'video' && (
+                      <View style={styles.videoBadge}>
+                        <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
+                      </View>
+                    )}
                   </Pressable>
                 ))}
                 {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
@@ -1294,7 +1313,8 @@ const styles = StyleSheet.create({
   thumbMissing: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e2e8f0' },
   thumbMissingText: { color: '#94a3b8', fontSize: 10, fontWeight: '800' },
   offlineBadge: { position: 'absolute', left: 6, top: 6, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: '#16a34a', fontSize: 9, fontWeight: '800' },
-  videoBadge: { position: 'absolute', right: 6, bottom: 6, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: '#0f172a', fontSize: 9, fontWeight: '800' },
+  videoBadge: { position: 'absolute', right: 6, bottom: 6, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: 'rgba(15,23,42,0.82)' },
+  videoBadgeText: { color: '#ffffff', fontSize: 10, fontWeight: '800' },
 
   // Empty
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, paddingHorizontal: 32 },
