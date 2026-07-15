@@ -46,9 +46,20 @@ jobs:
       - name: Decode keystore
         if: ${{ env.HAS_KEYSTORE == 'true' }}
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > android/app/upload-keystore.jks
+          echo "Keystore decodificada: $(stat -c%s android/app/upload-keystore.jks) bytes"
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+      - name: Validate keystore
+        if: ${{ env.HAS_KEYSTORE == 'true' }}
+        run: |
+          keytool -list -keystore android/app/upload-keystore.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "Keystore OK (alias '$ANDROID_KEY_ALIAS' encontrado)."
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
 
       - name: Configure release signing
         if: ${{ env.HAS_KEYSTORE == 'true' }}

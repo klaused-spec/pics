@@ -45,9 +45,23 @@ jobs:
 
       - name: Decode keystore
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          # Remove qualquer whitespace/quebra de linha que o secret possa ter
+          # e decodifica de forma tolerante (base64 do PowerShell vem em 1 linha).
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > android/app/upload-keystore.jks
+          echo "Keystore decodificada: $(stat -c%s android/app/upload-keystore.jks) bytes"
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+      - name: Validate keystore
+        run: |
+          # Falha cedo com mensagem clara se o arquivo nao for um keystore valido
+          # ou se a senha/alias estiverem errados (em vez de falhar 7 min depois no Gradle).
+          keytool -list -keystore android/app/upload-keystore.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "Keystore OK (alias '$ANDROID_KEY_ALIAS' encontrado)."
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
 
       - name: Configure release signing
         run: |
