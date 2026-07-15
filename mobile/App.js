@@ -376,6 +376,11 @@ export default function App() {
   const thumbTop = useRef(new Animated.Value(0)).current
   const trackUsableRef = useRef(1)
 
+  // Controle de sync: para retomar automaticamente ao voltar do background.
+  const syncingRef = useRef(false)
+  const syncInterruptedRef = useRef(false)
+  const syncCtxRef = useRef({ token: '', baseUrl: '' })
+
   const [treeExpanded, setTreeExpanded] = useState({})
   const [treeSelected, setTreeSelected] = useState(null)
 
@@ -398,9 +403,19 @@ export default function App() {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {})
     boot()
     // Ao voltar ao app, reconcilia a tag OFFLINE com o que está na pasta Pics
-    // (caso o usuário tenha apagado fotos por fora).
+    // (caso o usuário tenha apagado fotos por fora) e retoma um sync interrompido.
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') refreshCachedFullIds()
+      if (state === 'active') {
+        refreshCachedFullIds()
+        if (syncInterruptedRef.current && !syncingRef.current) {
+          syncInterruptedRef.current = false
+          const ctx = syncCtxRef.current
+          if (ctx.token) {
+            // Retoma incremental usando o syncToken já persistido.
+            syncLibrary(ctx.token, ctx.baseUrl)
+          }
+        }
+      }
     })
     return () => sub.remove()
   }, [])
@@ -653,8 +668,34 @@ export default function App() {
     ])
   }
 
+  // Busca uma página do manifesto com algumas tentativas (resiliente a falhas de rede).
+  async function fetchManifestPage(url, activeToken, attempts = 3) {
+    let lastError
+    for (let tryIndex = 0; tryIndex < attempts; tryIndex += 1) {
+      try {
+        const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) }, 20000)
+        if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)
+        return await response.json()
+      } catch (error) {
+        lastError = error
+        // Se o app foi para background no meio, não insiste: sinaliza para retomar depois.
+        if (AppState.currentState !== 'active') {
+          const interrupted = new Error('background')
+          interrupted.code = 'BACKGROUND'
+          throw interrupted
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1200 * (tryIndex + 1)))
+      }
+    }
+    throw lastError
+  }
+
   async function syncLibrary(activeToken = token, activeBaseUrl = baseUrl, activeSyncToken = syncToken, seedItems = items) {
     if (!activeToken) return
+    if (syncingRef.current) return
+    syncingRef.current = true
+    syncInterruptedRef.current = false
+    syncCtxRef.current = { token: activeToken, baseUrl: activeBaseUrl }
     setSyncing(true)
     setSyncStatus('Sincronizando lista...')
     try {
@@ -667,11 +708,7 @@ export default function App() {
       while (true) {
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
         const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=1000&size=300${sinceParam}`)
-        const response = await fetchWithTimeout(manifestUrl, {
-          headers: authHeaders(activeToken),
-        })
-        if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)
-        const data = await response.json()
+        const data = await fetchManifestPage(manifestUrl, activeToken)
         const totalPages = Math.max(data.pages, 1)
         const totalItems = data.total || 0
         const processedBeforePage = (page - 1) * data.per_page
@@ -690,24 +727,33 @@ export default function App() {
         }
 
         nextSyncToken = data.sync_token
+        // Salva progresso a cada página para não perder o já baixado.
+        const partial = Array.from(itemMap.values()).sort((left, right) => {
+          return (right.date_taken || '').localeCompare(left.date_taken || '')
+        })
+        setItems(partial)
+        await persistItemCache(partial)
+
         if (!data.has_more) break
         page += 1
       }
 
-      const nextItems = Array.from(itemMap.values()).sort((left, right) => {
-        return (right.date_taken || '').localeCompare(left.date_taken || '')
-      })
-      setItems(nextItems)
       setSyncToken(nextSyncToken)
-      const cachedCount = await persistItemCache(nextItems)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
-      const cacheText = nextItems.length > cachedCount ? `, ${cachedCount} em cache local` : ''
-      setSyncStatus(`Lista pronta: ${nextItems.length} itens${cacheText}`)
+      const finalCount = itemMap.size
+      setSyncStatus(`Lista pronta: ${finalCount} itens`)
       loadAlbums(activeToken, activeBaseUrl)
     } catch (error) {
-      Alert.alert('Sync', error.message)
-      setSyncStatus('Sync interrompido')
+      if (error.code === 'BACKGROUND') {
+        // Interrompido por ir para background: retoma ao voltar, sem alerta.
+        syncInterruptedRef.current = true
+        setSyncStatus('Sync pausado (app em segundo plano) — retomará ao voltar')
+      } else {
+        syncInterruptedRef.current = true
+        setSyncStatus('Sync interrompido — toque para tentar de novo')
+      }
     } finally {
+      syncingRef.current = false
       setSyncing(false)
     }
   }
