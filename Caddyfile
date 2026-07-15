@@ -1,8 +1,8 @@
 # Caddyfile - Reverse proxy HTTPS para o app Pics (Windows)
 #
 # Fluxo:
-#   Navegador / App  --HTTPS-->  Caddy (443)  -->  /api/*  -->  uvicorn  (localhost:8000)
-#                                              -->  restante -->  build do frontend (dist)
+#   Navegador / App  --HTTPS-->  Caddy (8443)  -->  /api/*  -->  uvicorn  (localhost:8000)
+#                                               -->  restante -->  build do frontend (dist)
 #
 # Certificado emitido pelo certbot via DNS-01 MANUAL na Hostinger.
 # O Caddy apenas USA o certificado (não faz ACME por conta própria).
@@ -12,7 +12,7 @@
 	auto_https off
 }
 
-pics.meulavoro.com.br:443 {
+pics.meulavoro.com.br:8443 {
 	encode gzip zstd
 
 	# Certificado gerado pelo certbot (ver issue-cert.ps1)
