@@ -1,0 +1,37 @@
+# Caddyfile - Reverse proxy HTTPS para o app Pics (Windows)
+#
+# Fluxo:
+#   Navegador / App  --HTTPS-->  Caddy (443)  -->  /api/*  -->  uvicorn  (localhost:8000)
+#                                              -->  restante -->  build do frontend (dist)
+#
+# Certificado Let's Encrypt via DNS-01 na Hostinger (não precisa abrir a porta 80).
+# É necessário o build do Caddy COM o plugin da Hostinger (ver INSTALL abaixo).
+
+pics.kirner.com.br {
+	encode gzip zstd
+
+	# Emissão/renovação automática via DNS-01 na Hostinger.
+	# O token vem de uma variável de ambiente (não deixe o token em texto no arquivo).
+	tls {
+		dns hostinger {env.HOSTINGER_API_TOKEN}
+	}
+
+	# API -> backend uvicorn (mantém o /api no caminho encaminhado)
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Frontend (SPA) -> build de produção do Vite
+	handle {
+		root * C:\src\pics\frontend\dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Cabeçalhos de segurança
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

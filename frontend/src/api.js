@@ -1,20 +1,23 @@
 import axios from 'axios'
 
 // Detecta dinamicamente o host do backend
-// - Se estiver em localhost:5173 → usa localhost:8000
-// - Se estiver em klaused.tplinkdns.com:5173 → usa klaused.tplinkdns.com:8000
-// - Se for um IP (172.xxx:5173) → usa o mesmo IP com porta 8000
-// Sempre usa HTTP (backend roda em HTTP)
+// - Em dev (localhost:5173 / IP:5173) → usa o backend direto na porta 8000 (HTTP)
+// - Em produção (servido pelo reverse proxy Caddy em HTTPS) → usa /api na
+//   MESMA origem, e o proxy encaminha para o backend. Evita mixed-content e
+//   não expõe a porta 8000.
 const getBaseURL = () => {
-  const hostname = window.location.hostname
-  
-  // Se for localhost ou 127.0.0.1, usa localhost:8000
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+  const { hostname, port } = window.location
+
+  // Dev local direto no Vite (porta 5173) ou acesso por IP na 5173
+  if ((hostname === 'localhost' || hostname === '127.0.0.1') && port === '5173') {
     return 'http://localhost:8000/api'
   }
-  
-  // Sempre usa HTTP para o backend (mesmo se frontend for HTTPS)
-  return `http://${hostname}:8000/api`
+  if (port === '5173') {
+    return `http://${hostname}:8000/api`
+  }
+
+  // Produção atrás do reverse proxy (HTTPS): mesma origem
+  return '/api'
 }
 
 const apiRoot = getBaseURL()

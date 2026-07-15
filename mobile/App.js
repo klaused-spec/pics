@@ -40,7 +40,7 @@ const GALLERY_ALBUM = 'Pics'
 
 function normalizeBaseUrl(value) {
   const trimmed = value.trim()
-  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
   return withProtocol.replace(/\/$/, '')
 }
 
@@ -348,7 +348,7 @@ async function saveItemToGalleryFile(tempUri, item) {
 }
 
 export default function App() {
-  const [baseUrl, setBaseUrl] = useState('http://klaused.tplinkdns.com:8000')
+  const [baseUrl, setBaseUrl] = useState('https://pics.kirner.com.br')
   const [email, setEmail] = useState('klaused@gmail.com')
   const [password, setPassword] = useState('')
   const [token, setToken] = useState('')
