@@ -1,7 +1,7 @@
 import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Boolean, Text,
-    ForeignKey, Table, JSON, LargeBinary
+    ForeignKey, Table, JSON, LargeBinary, Index
 )
 from sqlalchemy.orm import relationship
 
@@ -35,6 +35,13 @@ album_media = Table(
 class Media(Base):
     """Representa uma foto ou vídeo no sistema."""
     __tablename__ = "media"
+
+    # Índice composto que cobre o filtro + ordenação do manifesto de sync
+    # (is_duplicate == False, is_organized == True, order by updated_at asc, id asc),
+    # evitando full scan e acelerando as páginas altas do sync do app.
+    __table_args__ = (
+        Index("ix_media_sync_manifest", "is_duplicate", "is_organized", "updated_at", "id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     # Caminho original e organizado

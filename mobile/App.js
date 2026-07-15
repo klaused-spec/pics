@@ -705,6 +705,21 @@ export default function App() {
       let nextSyncToken = activeSyncToken
       const itemMap = new Map(seedItems.map((item) => [item.id, item]))
 
+      // Ordena e persiste o acumulado. Operações O(n): chamar só ocasionalmente
+      // (throttle) durante o loop e uma vez definitiva ao final. Isso evita que
+      // cada página fique progressivamente mais lenta com dezenas de milhares de itens.
+      const buildSorted = () => Array.from(itemMap.values()).sort((left, right) => {
+        return (right.date_taken || '').localeCompare(left.date_taken || '')
+      })
+      let lastFlush = Date.now()
+      const FLUSH_INTERVAL_MS = 4000
+      const flushProgress = async () => {
+        const partial = buildSorted()
+        setItems(partial)
+        await persistItemCache(partial)
+        lastFlush = Date.now()
+      }
+
       while (true) {
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
         const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=1000&size=300${sinceParam}`)
@@ -716,9 +731,9 @@ export default function App() {
 
         for (const item of data.items) {
           const previous = itemMap.get(item.id)
-          const localThumb = thumbPath(item)
           const thumbChanged = previous?.updated_at && previous.updated_at !== item.updated_at
           if (thumbChanged) {
+            const localThumb = thumbPath(item)
             await FileSystem.deleteAsync(localThumb, { idempotent: true })
           }
           const localThumbnailUri = !thumbChanged && previous?.local_thumbnail_uri ? previous.local_thumbnail_uri : null
@@ -727,16 +742,19 @@ export default function App() {
         }
 
         nextSyncToken = data.sync_token
-        // Salva progresso a cada página para não perder o já baixado.
-        const partial = Array.from(itemMap.values()).sort((left, right) => {
-          return (right.date_taken || '').localeCompare(left.date_taken || '')
-        })
-        setItems(partial)
-        await persistItemCache(partial)
+
+        // Salva progresso periodicamente (não a cada página) para não perder o
+        // já baixado, sem pagar o custo de reordenar/regravar a lista inteira toda página.
+        if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
+          await flushProgress()
+        }
 
         if (!data.has_more) break
         page += 1
       }
+
+      // Flush definitivo com a lista completa e ordenada.
+      await flushProgress()
 
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })

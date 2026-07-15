@@ -71,6 +71,13 @@ def _run_migrations():
         if col not in existing_cols:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
 
+    # Índice composto para acelerar o manifesto de sync do app (filtro + order by),
+    # evitando full scan nas páginas altas com dezenas de milhares de itens.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_media_sync_manifest "
+        "ON media (is_duplicate, is_organized, updated_at, id)"
+    )
+
     # Verificar tabelas novas (albums)
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='albums'")
     if not cursor.fetchone():
