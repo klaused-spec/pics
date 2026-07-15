@@ -9,6 +9,7 @@ import {
   Alert,
   Animated,
   AppState,
+  BackHandler,
   Easing,
   FlatList,
   Image,
@@ -366,6 +367,22 @@ export default function App() {
     })
     return () => sub.remove()
   }, [])
+
+  // Botão voltar do Android: desfaz a navegação interna em vez de minimizar.
+  useEffect(() => {
+    const onBack = () => {
+      if (showNewAlbum) { setShowNewAlbum(false); return true }
+      if (slideshow) { stopSlideshow(); return true }
+      if (selected) { setSelected(null); return true }
+      if (selectMode) { cancelSelection(); return true }
+      if (activeTab === 'tree' && treeSelected) { setTreeSelected(null); return true }
+      if (activeTab === 'albums' && openAlbumId) { setOpenAlbumId(null); return true }
+      if (activeTab !== 'photos') { setActiveTab('photos'); return true }
+      return false
+    }
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack)
+    return () => sub.remove()
+  }, [showNewAlbum, slideshow, selected, selectMode, activeTab, treeSelected, openAlbumId])
 
   async function boot() {
     await ensureDirectories()
