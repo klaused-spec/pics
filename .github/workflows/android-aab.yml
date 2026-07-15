@@ -1,21 +1,24 @@
-name: Android APK
+name: Android AAB (Play Store)
+
+# Gera um Android App Bundle (.aab) de release ASSINADO, pronto para envio a
+# Google Play Console. A assinatura usa uma keystore de upload guardada como
+# GitHub Secrets (nunca commitada no repositorio).
+#
+# Secrets necessarios (Settings > Secrets and variables > Actions):
+#   ANDROID_KEYSTORE_BASE64  -> conteudo do .jks em base64
+#   ANDROID_KEYSTORE_PASSWORD-> senha da keystore
+#   ANDROID_KEY_ALIAS        -> alias da chave (ex.: pics-upload)
+#   ANDROID_KEY_PASSWORD     -> senha da chave
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'mobile/**'
-      - '.github/workflows/android-apk.yml'
 
 jobs:
-  build-apk:
+  build-aab:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: mobile
-    env:
-      # Exposto no nivel de job para poder ser usado em condicoes `if:` dos steps.
-      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
 
     steps:
       - name: Checkout
@@ -40,18 +43,13 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --non-interactive
 
-      # Assinatura de release (opcional). Se os secrets estiverem definidos, o APK
-      # sera assinado com a keystore de upload; caso contrario, cai no fallback
-      # do Gradle (debug keystore), que ainda instala mas nao e estavel.
       - name: Decode keystore
-        if: ${{ env.HAS_KEYSTORE == 'true' }}
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
 
       - name: Configure release signing
-        if: ${{ env.HAS_KEYSTORE == 'true' }}
         run: |
           cat > android/keystore.properties <<EOF
           storeFile=upload-keystore.jks
@@ -59,24 +57,26 @@ jobs:
           keyAlias=${ANDROID_KEY_ALIAS}
           keyPassword=${ANDROID_KEY_PASSWORD}
           EOF
-          node ../.github/scripts/inject-signing.js
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
-      - name: Build release APK
-        run: ./gradlew assembleRelease
+      - name: Inject signingConfig into build.gradle
+        run: node ../.github/scripts/inject-signing.js
+
+      - name: Build signed release AAB
+        run: ./gradlew bundleRelease
         working-directory: mobile/android
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: pics-mobile-release-aab
+          path: mobile/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
 
       - name: Cleanup secrets
         if: always()
         run: |
           rm -f android/app/upload-keystore.jks android/keystore.properties
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: pics-mobile-release-apk
-          path: mobile/android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error

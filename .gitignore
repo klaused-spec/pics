@@ -56,3 +56,10 @@ debug_token.js
 test_token.py
 test_new_token.py
 backend/get-pip.py
+
+# Assinatura Android (NUNCA versionar keystore nem senhas)
+*.jks
+*.keystore
+keystore.properties
+mobile/android/
+
