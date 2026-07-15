@@ -32,7 +32,8 @@ const ITEMS_KEY = 'pics_mobile_items'
 const ALBUMS_KEY = 'pics_mobile_albums'
 const THUMB_DIR = `${FileSystem.documentDirectory}thumbs/`
 const FULL_DIR = `${FileSystem.documentDirectory}full/`
-const ITEM_CACHE_LIMIT = 5000
+// Lista completa da biblioteca em arquivo (AsyncStorage não escala para 100k+ itens).
+const ITEMS_FILE = `${FileSystem.documentDirectory}items.json`
 const DEFAULT_SLIDE_SECONDS = 5
 const SCRUB_THUMB = 44
 const GALLERY_ALBUM = 'Pics'
@@ -88,17 +89,38 @@ async function ensureDirectories() {
 }
 
 async function persistItemCache(nextItems) {
-  const cachedItems = nextItems.slice(0, ITEM_CACHE_LIMIT)
+  // Sem limite: grava a lista inteira em arquivo (suporta 100k+ itens).
   try {
-    await AsyncStorage.removeItem(ITEMS_KEY)
-    if (cachedItems.length) {
-      await AsyncStorage.setItem(ITEMS_KEY, JSON.stringify(cachedItems))
-    }
-  } catch (_) {
+    await FileSystem.writeAsStringAsync(ITEMS_FILE, JSON.stringify(nextItems))
+    // Remove o cache antigo baseado em AsyncStorage, se existir.
     await AsyncStorage.removeItem(ITEMS_KEY).catch(() => {})
+  } catch (_) {
     return 0
   }
-  return cachedItems.length
+  return nextItems.length
+}
+
+async function loadItemCache() {
+  // Preferência: arquivo. Fallback: AsyncStorage legado (migra para arquivo).
+  try {
+    if (await fileExists(ITEMS_FILE)) {
+      const raw = await FileSystem.readAsStringAsync(ITEMS_FILE)
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed
+    }
+  } catch (_) {}
+  try {
+    const legacy = await AsyncStorage.getItem(ITEMS_KEY)
+    if (legacy) {
+      const parsed = JSON.parse(legacy)
+      if (Array.isArray(parsed) && parsed.length) {
+        await FileSystem.writeAsStringAsync(ITEMS_FILE, JSON.stringify(parsed)).catch(() => {})
+        await AsyncStorage.removeItem(ITEMS_KEY).catch(() => {})
+        return parsed
+      }
+    }
+  } catch (_) {}
+  return []
 }
 
 function extensionFromContent(item) {
@@ -123,6 +145,21 @@ function folderName(folder) {
   if (!folder) return 'Sem pasta'
   const parts = folder.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] || 'Sem pasta'
+}
+
+// Deriva ano/mês do caminho físico da pasta (ex.: .../2026_05/... ou .../2026/05/...),
+// para agrupar a pasta no mês onde ela realmente está — igual ao webapp — em vez
+// de usar a data individual de cada foto.
+function folderMonthKey(folder) {
+  if (!folder) return null
+  const path = String(folder).replace(/\\/g, '/')
+  let match = path.match(/(?:^|\/)(\d{4})_(\d{2})(?:\/|$)/)
+  if (!match) match = path.match(/(?:^|\/)(\d{4})\/(\d{2})(?:\/|$)/)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  if (!year || month < 1 || month > 12) return null
+  return { year, month }
 }
 
 function dateKey(item) {
@@ -390,12 +427,11 @@ export default function App() {
     // automático dos arquivos offline nunca pergunta foto a foto.
     ensureMediaPermission().catch(() => {})
     await refreshCachedFullIds()
-    const [storedSettings, storedItems, storedAlbums] = await Promise.all([
+    const [storedSettings, cachedItems, storedAlbums] = await Promise.all([
       AsyncStorage.getItem(SETTINGS_KEY),
-      AsyncStorage.getItem(ITEMS_KEY),
+      loadItemCache(),
       AsyncStorage.getItem(ALBUMS_KEY),
     ])
-    const cachedItems = storedItems ? JSON.parse(storedItems) : []
     if (cachedItems.length) {
       setItems(cachedItems)
     }
@@ -919,14 +955,17 @@ export default function App() {
   const treeMonths = useMemo(() => {
     const groups = new Map()
     for (const item of items) {
-      const year = item.year || 0
-      const month = item.month || 0
+      const folder = item.folder || ''
+      // O mês da pasta vem do caminho físico (igual ao webapp). Sem pasta ou sem
+      // padrão de data no caminho, cai no date_taken (year/month) do item.
+      const derived = folder ? folderMonthKey(folder) : null
+      const year = derived ? derived.year : (item.year || 0)
+      const month = derived ? derived.month : (item.month || 0)
       const key = `${year}-${month}`
       if (!groups.has(key)) groups.set(key, { key, year, month, count: 0, folders: new Map(), items: [] })
       const node = groups.get(key)
       node.count += 1
       node.items.push(item)
-      const folder = item.folder || ''
       if (folder) {
         if (!node.folders.has(folder)) node.folders.set(folder, [])
         node.folders.get(folder).push(item)
