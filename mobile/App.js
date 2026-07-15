@@ -348,7 +348,7 @@ async function saveItemToGalleryFile(tempUri, item) {
 }
 
 export default function App() {
-  const [baseUrl, setBaseUrl] = useState('https://pics.kirner.com.br')
+  const [baseUrl, setBaseUrl] = useState('https://pics.meulavoro.com.br')
   const [email, setEmail] = useState('klaused@gmail.com')
   const [password, setPassword] = useState('')
   const [token, setToken] = useState('')

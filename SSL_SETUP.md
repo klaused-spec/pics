@@ -1,6 +1,6 @@
 # HTTPS com Caddy + Let's Encrypt (DNS-01 Hostinger)
 
-Guia para servir o Pics em `https://pics.kirner.com.br` usando **Caddy** como
+Guia para servir o Pics em `https://pics.meulavoro.com.br` usando **Caddy** como
 reverse proxy no Windows, com certificado Let's Encrypt renovado automaticamente
 via **DNS-01** (não precisa abrir a porta 80).
 
@@ -86,7 +86,7 @@ No `backend/.env`, garanta que o domínio esteja liberado no CORS (útil para o 
 mobile e para acesso direto em dev):
 
 ```
-ALLOWED_HOSTS=localhost,127.0.0.1,pics.kirner.com.br
+ALLOWED_HOSTS=localhost,127.0.0.1,pics.meulavoro.com.br
 ```
 
 ## 7. Rodar o Caddy
@@ -121,7 +121,7 @@ e configure a variável `HOSTINGER_API_TOKEN` como variável de ambiente **do si
   `/api` na **mesma origem** — sem mixed-content e sem expor a 8000. Em dev
   (`:5173`) continua batendo direto no `:8000`.
 - **App mobile** (`mobile/App.js`): base URL padrão agora é
-  `https://pics.kirner.com.br`; URLs sem protocolo assumem `https://`.
+  `https://pics.meulavoro.com.br`; URLs sem protocolo assumem `https://`.
 
 ## Impacto de performance
 
