@@ -23,7 +23,7 @@ sudo apt-get install -y -qq \
     ffmpeg \
     libjpeg-dev \
     libpng-dev \
-    libgl1-mesa-glx \
+    libgl1-mesa-dri \
     libglib2.0-0 \
     build-essential \
     > /dev/null 2>&1

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getPersonMedia, updatePerson, deletePerson, getFaceThumbnailUrl } from '../api'
+import { api, getPersonMedia, updatePerson, deletePerson, getFaceThumbnailUrl } from '../api'
 import MediaGrid from '../components/MediaGrid'
 import { ArrowLeft, Edit2, Play, Image, Trash2 } from 'lucide-react'
 
@@ -12,6 +12,7 @@ function PersonDetail() {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState('')
   const [showAvatarPicker, setShowAvatarPicker] = useState(false)
+  const [thumbs, setThumbs] = useState({})
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
@@ -25,6 +26,15 @@ function PersonDetail() {
       const res = await getPersonMedia(id, { per_page: 100 })
       setData(res.data)
       setName(res.data.person.name)
+      // preload thumbnails for avatar picker
+      if (res.data.person && res.data.person.face_ids) {
+        // revoke previous
+        Object.values(thumbs).forEach(u => { try { URL.revokeObjectURL(u) } catch(e) {} })
+        const results = await Promise.allSettled(res.data.person.face_ids.map(fid => api.get(`/persons/faces/${fid}/thumbnail`, { params: { size: 120 }, responseType: 'blob' })))
+        const map = {}
+        results.forEach((r, i) => { const fid = res.data.person.face_ids[i]; if (r && r.status === 'fulfilled' && r.value && r.value.data) { try { map[fid] = URL.createObjectURL(r.value.data) } catch(e){ map[fid]=null } } else { map[fid]=null } })
+        setThumbs(map)
+      }
     } catch (err) {
       console.error(err)
     }
@@ -101,7 +111,7 @@ function PersonDetail() {
             title="Clique para trocar foto"
           >
             {data.person.avatar_face_id ? (
-              <img src={getFaceThumbnailUrl(data.person.avatar_face_id, 80)} alt="" className="w-full h-full object-cover" />
+              <img src={thumbs[data.person.avatar_face_id] || getFaceThumbnailUrl(data.person.avatar_face_id, 80)} alt="" className="w-full h-full object-cover" />
             ) : (
               <Image size={16} className="text-gray-500" />
             )}
@@ -192,7 +202,7 @@ function PersonDetail() {
                     data.person.avatar_face_id === fid ? 'border-blue-500' : 'border-gray-600 hover:border-gray-400'
                   }`}
                 >
-                  <img src={getFaceThumbnailUrl(fid, 120)} alt="" className="w-full h-full object-cover" />
+                  <img src={thumbs[fid] || getFaceThumbnailUrl(fid, 120)} alt="" className="w-full h-full object-cover" />
                 </div>
               ))}
             </div>

@@ -192,3 +192,15 @@ class AiCache(Base):
     ai_scene_type = Column(String, nullable=True)
     ai_objects = Column(JSON, nullable=True)
     processed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class User(Base):
+    """Usuário do sistema com autenticação."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

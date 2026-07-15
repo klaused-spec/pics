@@ -6,7 +6,17 @@ import api from '../api'
 
 export default function Settings() {
   const navigate = useNavigate()
-  const [paths, setPaths] = useState({ source_dir: '', organized_dir: '', database_path: '', organization_pattern: 'year/month', library_folders: [], allow_library_modify: false })
+  const [paths, setPaths] = useState({
+    source_dir: '',
+    organized_dir: '',
+    database_path: '',
+    organization_pattern: 'year/month',
+    library_folders: [],
+    allow_library_modify: false,
+    ai_processing_enabled: true,
+    face_auto_approve_high_confidence: false,
+    face_auto_approve_min_confidence: 0.75,
+  })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null) // { type, text, section }
 
@@ -30,6 +40,9 @@ export default function Settings() {
         organization_pattern: paths.organization_pattern,
         library_folders: paths.library_folders,
         allow_library_modify: paths.allow_library_modify,
+        ai_processing_enabled: paths.ai_processing_enabled,
+        face_auto_approve_high_confidence: paths.face_auto_approve_high_confidence,
+        face_auto_approve_min_confidence: Number(paths.face_auto_approve_min_confidence),
       })
       setMessage({ type: 'success', text: 'Configurações salvas!', section: 'paths' })
     } catch (e) {
@@ -161,6 +174,54 @@ export default function Settings() {
             {message.text}
           </div>
         )}
+      </section>
+
+      {/* IA e Rostos */}
+      <section className="bg-white rounded-xl shadow p-6 space-y-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Database className="w-5 h-5" /> IA e Rostos
+        </h2>
+
+        <label className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            checked={paths.ai_processing_enabled || false}
+            onChange={e => setPaths(p => ({ ...p, ai_processing_enabled: e.target.checked }))}
+            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">Permitir processamento com IA</span>
+        </label>
+
+        <label className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            checked={paths.face_auto_approve_high_confidence || false}
+            onChange={e => setPaths(p => ({ ...p, face_auto_approve_high_confidence: e.target.checked }))}
+            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-700">Autoaprovar rostos com alta confiança</span>
+        </label>
+
+        <label className="block">
+          <span className="text-sm font-medium text-gray-700">Confiança mínima para autoaprovar rostos</span>
+          <input
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            value={paths.face_auto_approve_min_confidence}
+            onChange={e => setPaths(p => ({ ...p, face_auto_approve_min_confidence: e.target.value }))}
+            className="mt-1 block w-32 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </label>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        >
+          <Save className="w-4 h-4" /> {saving ? 'Salvando...' : 'Salvar'}
+        </button>
       </section>
 
       {/* Padrão de Organização */}

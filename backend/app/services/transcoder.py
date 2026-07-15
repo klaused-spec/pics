@@ -8,20 +8,22 @@ import subprocess
 import logging
 from pathlib import Path
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 # Codecs que o browser toca nativamente
 WEB_COMPATIBLE_CODECS = {"h264", "hevc", "vp8", "vp9", "av1"}
 
 # Extensões que o browser NÃO toca nativamente
-NON_WEB_EXTENSIONS = {".mpg", ".mpeg", ".avi", ".wmv", ".mkv", ".3gp", ".flv", ".ogv", ".webm", ".mov"}
+NON_WEB_EXTENSIONS = {".mpg", ".mpeg", ".avi", ".wmv", ".mkv", ".3gp", ".flv", ".ogv", ".webm", ".mov", ".mts"}
 
 
 def _get_duration(filepath: str) -> float:
     """Obtém duração do vídeo em segundos via ffprobe."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            [settings.ffprobe_path, "-v", "quiet", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
             capture_output=True, text=True, timeout=30,
         )
@@ -48,13 +50,6 @@ def get_transcode_progress(original_path: str) -> dict:
     progress_file = transcoded_path + ".progress"
     lock_file = transcoded_path + ".lock"
 
-    if os.path.exists(transcoded_path):
-        # Limpar arquivos auxiliares
-        for f in [progress_file, lock_file]:
-            if os.path.exists(f):
-                os.remove(f)
-        return {"status": "done", "progress": 100}
-
     if os.path.exists(progress_file):
         try:
             with open(progress_file, "r") as f:
@@ -67,6 +62,9 @@ def get_transcode_progress(original_path: str) -> dict:
 
     if os.path.exists(lock_file):
         return {"status": "transcoding", "progress": 0}
+
+    if os.path.exists(transcoded_path):
+        return {"status": "done", "progress": 100}
 
     return {"status": "idle", "progress": 0}
 
@@ -107,7 +105,7 @@ def transcode_video(original_path: str) -> str:
         # Usar -progress pipe:1 para ler progresso
         proc = subprocess.Popen(
             [
-                "ffmpeg", "-i", original_path,
+                settings.ffmpeg_path, "-i", original_path,
                 "-c:v", "libx264",
                 "-preset", "medium",
                 "-crf", "22",
@@ -119,13 +117,17 @@ def transcode_video(original_path: str) -> str:
                 output_path,
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
         )
 
         # Ler progresso do stdout
+        last_output_lines = []
         for line in proc.stdout:
             line = line.strip()
+            if line:
+                last_output_lines.append(line)
+                last_output_lines = last_output_lines[-20:]
             if line.startswith("out_time_us="):
                 try:
                     time_us = int(line.split("=")[1])
@@ -138,7 +140,7 @@ def transcode_video(original_path: str) -> str:
         proc.wait(timeout=3600)
 
         if proc.returncode != 0:
-            stderr = proc.stderr.read() if proc.stderr else ""
+            stderr = "\n".join(last_output_lines)
             if os.path.exists(output_path):
                 os.remove(output_path)
             if os.path.exists(progress_file):

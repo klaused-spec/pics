@@ -1,5 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy import text
 
 from app.core.config import settings
 
@@ -7,6 +8,15 @@ engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
 )
+# If using SQLite, enable WAL journal mode and a busy timeout to reduce "database is locked" errors
+if "sqlite" in settings.database_url:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL;"))
+            conn.execute(text("PRAGMA busy_timeout=5000;"))
+    except Exception:
+        # Avoid crashing on startup if PRAGMA fails; logs will show issues
+        pass
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -54,6 +64,7 @@ def _run_migrations():
         ("media", "needs_transcode", "INTEGER DEFAULT 0"),
         ("media", "missing_since", "TEXT"),
         ("media", "faces_processed", "INTEGER DEFAULT 0"),
+        ("media", "missing_scans_count", "INTEGER DEFAULT 0"),
     ]
 
     for table, col, col_type in migrations:

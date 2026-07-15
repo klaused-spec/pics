@@ -2,14 +2,31 @@ from pydantic_settings import BaseSettings
 from pydantic import field_validator, model_validator
 from pathlib import Path
 from typing import Any
+import os
 
 
 class Settings(BaseSettings):
+    # Autenticação JWT
+    secret_key: str = "your-secret-key-change-in-production"  # MUDAR EM PRODUÇÃO
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 1440  # 24 horas
+
+    # Frontend - Domínio/hosts permitidos para CORS
+    allowed_hosts: str = "localhost,127.0.0.1"  # Separado por vírgula
+    frontend_port: int = 5173
+    backend_port: int = 8000
+
+    @property
+    def allowed_hosts_list(self) -> list[str]:
+        """Converte string de hosts para lista."""
+        return [h.strip() for h in self.allowed_hosts.split(",") if h.strip()]
+
     # Azure OpenAI
     azure_openai_endpoint: str = ""
     azure_openai_key: str = ""
     azure_openai_deployment: str = "gpt-4o"
     azure_openai_api_version: str = "2024-08-01-preview"
+    ai_processing_enabled: bool = True
 
     # Diretórios
     source_dir: str = "/home/kkirner/src/pics/FOTOS/source"
@@ -46,6 +63,18 @@ class Settings(BaseSettings):
     max_concurrent_ai_calls: int = 3
     scan_interval_minutes: int = 30
     scan_workers: int = 4  # Número de threads paralelas para scan (SHA256, metadados, pHash)
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
+
+    # Face detection / recognition tuning
+    face_detection_min_confidence: float = 0.5
+    face_mesh_min_detection_confidence: float = 0.5
+    face_mesh_max_num_faces: int = 10
+    face_detector_model_selection: int = 1
+    face_dedup_iou_threshold: float = 0.5
+    face_auto_approve_high_confidence: bool = False
+    face_auto_approve_min_confidence: float = 0.75
+    ort_log_severity: int = 3  # ONNX Runtime log severity (0=VERBOSE .. 4=FATAL)
 
     # Extensões suportadas
     image_extensions: list[str] = [
@@ -54,7 +83,7 @@ class Settings(BaseSettings):
     ]
     video_extensions: list[str] = [
         ".mp4", ".mpeg", ".mpg", ".mov", ".avi", ".mkv", ".wmv",
-        ".m4v", ".3gp", ".webm"
+        ".m4v", ".3gp", ".webm", ".mts"
     ]
 
     @property
@@ -62,8 +91,9 @@ class Settings(BaseSettings):
         return self.image_extensions + self.video_extensions
 
     class Config:
-        env_file = ".env"
+        env_file = str(Path(__file__).parent.parent.parent / ".env")
         env_file_encoding = "utf-8"
+        case_sensitive = False
 
 
 settings = Settings()

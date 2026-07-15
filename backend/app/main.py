@@ -4,6 +4,7 @@ Aplicação principal FastAPI.
 """
 import datetime
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,7 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
 from app.core.database import init_db, backup_env_to_db, restore_env_from_db
-from app.api import media_router, persons_router, jobs_router, albums_router, settings_router
+from app.api import auth_router, media_router, persons_router, jobs_router, albums_router, settings_router, mobile_router
 from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync
 
 # Configuração de logging
@@ -96,21 +97,44 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS para frontend
+# CORS para frontend - dinâmico baseado em .env
+allowed_origins = []
+allowed_origin_regex = None
+
+for host in settings.allowed_hosts_list:
+    # HTTP e HTTPS para o host especificado
+    allowed_origins.append(f"http://{host}:{settings.frontend_port}")
+    allowed_origins.append(f"https://{host}:{settings.frontend_port}")
+    # Também aceita porta padrão (80/443) se for um domínio
+    if host not in ["localhost", "127.0.0.1"]:
+        allowed_origins.append(f"http://{host}")
+        allowed_origins.append(f"https://{host}")
+
+# Regex para aceitar também IPs locais (172.x.x.x, 192.168.x.x)
+allowed_origin_regex = (
+    r"^https?://(?:localhost|127\.0\.0\.1|"
+    + "|".join(re.escape(h) for h in settings.allowed_hosts_list) +
+    r"|\d{1,3}(?:\.\d{1,3}){3})"
+    r":(?:" + str(settings.frontend_port) + r"|80|443)$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Rotas
+app.include_router(auth_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(persons_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(mobile_router, prefix="/api")
 
 
 @app.get("/api/health")

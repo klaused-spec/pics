@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getPersons, createPerson, runClustering, getFaceThumbnailUrl } from '../api'
+import { api, getPersons, createPerson, runClustering, getFaceThumbnailUrl } from '../api'
 import { Users, Plus, Sparkles, ScanFace } from 'lucide-react'
 
 function Persons() {
@@ -9,6 +9,7 @@ function Persons() {
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState('')
   const navigate = useNavigate()
+  const [thumbs, setThumbs] = useState({})
 
   useEffect(() => {
     loadPersons()
@@ -18,7 +19,22 @@ function Persons() {
     setLoading(true)
     try {
       const res = await getPersons({ per_page: 100 })
-      setPersons(res.data.items)
+      const list = res.data.items
+      setPersons(list)
+      // fetch avatars via authenticated requests
+      // revoke old URLs
+      Object.values(thumbs).forEach(u => { try { URL.revokeObjectURL(u) } catch (e) {} })
+      const results = await Promise.allSettled(list.map(p => p.avatar_face_id ? api.get(`/persons/faces/${p.avatar_face_id}/thumbnail`, { params: { size: 120 }, responseType: 'blob' }) : Promise.resolve(null)))
+      const map = {}
+      results.forEach((r, i) => {
+        const pid = list[i].id
+        if (r && r.status === 'fulfilled' && r.value && r.value.data) {
+          try { map[pid] = URL.createObjectURL(r.value.data) } catch (e) { map[pid] = null }
+        } else {
+          map[pid] = null
+        }
+      })
+      setThumbs(map)
     } catch (err) {
       console.error(err)
     }
@@ -126,7 +142,7 @@ function Persons() {
             <div className="w-16 h-16 rounded-full bg-gray-700 flex items-center justify-center mx-auto mb-3 overflow-hidden">
               {person.avatar_face_id ? (
                 <img
-                  src={getFaceThumbnailUrl(person.avatar_face_id, 120)}
+                  src={thumbs[person.id] || getFaceThumbnailUrl(person.avatar_face_id, 120)}
                   alt={person.name}
                   className="w-full h-full object-cover"
                 />

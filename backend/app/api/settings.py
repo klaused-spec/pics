@@ -9,11 +9,12 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -27,6 +28,9 @@ class PathsConfig(BaseModel):
     organization_pattern: str = "year/month"
     library_folders: list[str] = []
     allow_library_modify: bool = False
+    ai_processing_enabled: bool = True
+    face_auto_approve_high_confidence: bool = False
+    face_auto_approve_min_confidence: float = 0.75
 
 
 class PathsResponse(BaseModel):
@@ -36,10 +40,13 @@ class PathsResponse(BaseModel):
     organization_pattern: str
     library_folders: list[str]
     allow_library_modify: bool
+    ai_processing_enabled: bool
+    face_auto_approve_high_confidence: bool
+    face_auto_approve_min_confidence: float
 
 
 @router.get("/paths", response_model=PathsResponse)
-def get_paths():
+def get_paths(current_user: dict = Depends(get_current_user)):
     """Retorna configuração atual dos diretórios."""
     db_path = settings.database_url.replace("sqlite:///", "").replace("sqlite:////", "/")
     if db_path.startswith("./"):
@@ -51,6 +58,9 @@ def get_paths():
         organization_pattern=settings.organization_pattern,
         library_folders=settings.library_folders,
         allow_library_modify=settings.allow_library_modify,
+        ai_processing_enabled=settings.ai_processing_enabled,
+        face_auto_approve_high_confidence=settings.face_auto_approve_high_confidence,
+        face_auto_approve_min_confidence=settings.face_auto_approve_min_confidence,
     )
 
 
@@ -60,6 +70,9 @@ def update_paths(config: PathsConfig):
     # Valida padrão de organização
     if config.organization_pattern not in ("year/month", "year_month"):
         raise HTTPException(status_code=400, detail="Padrão inválido. Use 'year/month' ou 'year_month'")
+
+    if not 0 <= config.face_auto_approve_min_confidence <= 1:
+        raise HTTPException(status_code=400, detail="Confiança mínima deve estar entre 0 e 1")
 
     # Valida que os diretórios existem ou podem ser criados
     all_dirs = [
@@ -79,6 +92,9 @@ def update_paths(config: PathsConfig):
     settings.organization_pattern = config.organization_pattern
     settings.library_folders = config.library_folders
     settings.allow_library_modify = config.allow_library_modify
+    settings.ai_processing_enabled = config.ai_processing_enabled
+    settings.face_auto_approve_high_confidence = config.face_auto_approve_high_confidence
+    settings.face_auto_approve_min_confidence = config.face_auto_approve_min_confidence
 
     # Persiste no .env
     env_data = {
@@ -87,6 +103,9 @@ def update_paths(config: PathsConfig):
         "ORGANIZATION_PATTERN": config.organization_pattern,
         "LIBRARY_FOLDERS_RAW": ",".join(config.library_folders),
         "ALLOW_LIBRARY_MODIFY": str(config.allow_library_modify).lower(),
+        "AI_PROCESSING_ENABLED": str(config.ai_processing_enabled).lower(),
+        "FACE_AUTO_APPROVE_HIGH_CONFIDENCE": str(config.face_auto_approve_high_confidence).lower(),
+        "FACE_AUTO_APPROVE_MIN_CONFIDENCE": str(config.face_auto_approve_min_confidence),
     }
     _save_env(env_data)
 
@@ -98,7 +117,7 @@ def update_paths(config: PathsConfig):
 
 
 @router.get("/backup")
-def backup_database():
+def backup_database(current_user: dict = Depends(get_current_user)):
     """
     Backup completo em ZIP contendo:
     - pics.db (banco SQLite com: media, faces/persons, AI cache, albums, tags)

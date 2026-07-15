@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import { getThumbnailUrl } from '../api'
 import { Check } from 'lucide-react'
 
-function MediaGrid({ items, onSelect, selected, onSelectMultiple, thumbSize = 'medium' }) {
+function MediaGrid({ items, onSelect, selected, onSelectMultiple, thumbSize = 'medium', thumbnailVersion = 0 }) {
   const gridRef = useRef(null)
   const [dragRect, setDragRect] = useState(null)
   const dragState = useRef({ active: false, startX: 0, startY: 0, moved: false })
@@ -134,7 +134,7 @@ function MediaGrid({ items, onSelect, selected, onSelectMultiple, thumbSize = 'm
           }}
         >
           <img
-            src={getThumbnailUrl(item.id)}
+            src={`${getThumbnailUrl(item.id)}&v=${thumbnailVersion}`}
             alt={item.ai_description || item.filename}
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             loading="lazy"

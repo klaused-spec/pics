@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getPendingFaces, getFaceThumbnailUrl, assignFace, confirmFace, ignoreFace, unassignFace, getPersons, createPerson } from '../api'
-import { ArrowLeft, Check, X, EyeOff, UserPlus } from 'lucide-react'
+import { api, getPendingFaces, getFaceThumbnailUrl, assignFace, confirmFace, ignoreFace, unassignFace, getPersons, createPerson, getHighConfidenceFaces, bulkApproveFaces, cleanupLowConfidenceFaces, refreshFaceSuggestions } from '../api'
+import { ArrowLeft, Check, X, EyeOff, UserPlus, Zap, Trash2, RefreshCw } from 'lucide-react'
 
 function FaceReview() {
   const [faces, setFaces] = useState([])
@@ -10,20 +10,55 @@ function FaceReview() {
   const [total, setTotal] = useState(0)
   const [editingFace, setEditingFace] = useState(null)
   const [newPersonName, setNewPersonName] = useState('')
+  const [thumbUrls, setThumbUrls] = useState({})
+  const [highConfidenceMode, setHighConfidenceMode] = useState(false)
+  const [approvingBulk, setApprovingBulk] = useState(false)
+  const [cleaningUp, setCleaningUp] = useState(false)
+  const [refreshingSuggestions, setRefreshingSuggestions] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     loadData()
-  }, [])
+  }, [highConfidenceMode])
 
   async function loadData() {
     setLoading(true)
     try {
-      const [facesRes, personsRes] = await Promise.all([
-        getPendingFaces({ per_page: 100 }),
-        getPersons({ per_page: 200 }),
-      ])
-      setFaces(facesRes.data.items)
+      let facesRes
+      if (highConfidenceMode) {
+        facesRes = await getHighConfidenceFaces({ per_page: 500, min_confidence: 0.75 })
+      } else {
+        facesRes = await getPendingFaces({ per_page: 100 })
+      }
+      
+      const personsRes = await getPersons({ per_page: 200 })
+      const facesList = facesRes.data.items
+      setFaces(facesList)
+      // Fetch thumbnails via authenticated XHR to include Authorization header
+      // and create blob URLs to use as image src (avoids 403 from <img> tags)
+      const fetchThumbs = async () => {
+        // revoke previous URLs
+        Object.values(thumbUrls).forEach(url => { try { URL.revokeObjectURL(url) } catch(e){} })
+        const results = await Promise.allSettled(
+          facesList.map(f => api.get(`/persons/faces/${f.id}/thumbnail`, { params: { size: 200 }, responseType: 'blob' }))
+        )
+        const newMap = {}
+        results.forEach((r, i) => {
+          const fid = facesList[i].id
+          if (r.status === 'fulfilled') {
+            try {
+              const blob = r.value.data
+              newMap[fid] = URL.createObjectURL(blob)
+            } catch (e) {
+              newMap[fid] = null
+            }
+          } else {
+            newMap[fid] = null
+          }
+        })
+        setThumbUrls(newMap)
+      }
+      fetchThumbs()
       setTotal(facesRes.data.total)
       setPersons(personsRes.data.items || personsRes.data)
     } catch (err) {
@@ -95,6 +130,50 @@ function FaceReview() {
     }
   }
 
+  async function handleBulkApprove() {
+    if (!window.confirm(`Aprovar ${faces.length} rostos com >= 75% de confiança?`)) return
+    
+    setApprovingBulk(true)
+    try {
+      const faceIds = faces.map(f => f.id)
+      await bulkApproveFaces(faceIds)
+      // Recarrega
+      await loadData()
+    } catch (err) {
+      console.error(err)
+      alert('Erro ao aprovar em massa: ' + err.message)
+    }
+    setApprovingBulk(false)
+  }
+
+  async function handleRefreshSuggestions() {
+    setRefreshingSuggestions(true)
+    try {
+      const res = await refreshFaceSuggestions()
+      await loadData()
+      alert(`Sugestões recalculadas:\n- Atualizadas: ${res.data.suggested}\n- Ambíguas limpas: ${res.data.cleared}\n- Referências confirmadas: ${res.data.confirmed_references}`)
+    } catch (err) {
+      console.error(err)
+      alert('Erro ao recalcular sugestões: ' + err.message)
+    }
+    setRefreshingSuggestions(false)
+  }
+
+  async function handleCleanup() {
+    if (!window.confirm('Remover faces não confirmadas com baixa confiança? Esta ação é irreversível!')) return
+    
+    setCleaningUp(true)
+    try {
+      const res = await cleanupLowConfidenceFaces(0.40)
+      alert(`Limpeza concluída:\n- Ignorados: ${res.data.ignored_removed}\n- Baixa confiança: ${res.data.low_confidence_removed}\n- Não identificados: ${res.data.unidentified_removed}\n- Total removido: ${res.data.total_removed}`)
+      await loadData()
+    } catch (err) {
+      console.error(err)
+      alert('Erro ao fazer limpeza: ' + err.message)
+    }
+    setCleaningUp(false)
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -115,15 +194,72 @@ function FaceReview() {
           </button>
           <div>
             <h2 className="text-xl font-semibold">Revisar Rostos</h2>
-            <p className="text-sm text-gray-400">{total} rostos pendentes</p>
+            <p className="text-sm text-gray-400">
+              {highConfidenceMode ? `${total} rostos com >= 75% confiança` : `${total} rostos pendentes`}
+            </p>
           </div>
+        </div>
+
+        {/* Botões de ação */}
+        <div className="flex gap-2">
+          <button
+            onClick={handleRefreshSuggestions}
+            disabled={refreshingSuggestions}
+            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium text-white disabled:opacity-50"
+            title="Recalcular sugestões usando rostos confirmados"
+          >
+            <RefreshCw size={16} className={refreshingSuggestions ? 'animate-spin' : ''} />
+            {refreshingSuggestions ? 'Reaprendendo...' : 'Reaprender'}
+          </button>
+
+          {/* Modo Alta Confiança */}
+          <button
+            onClick={() => setHighConfidenceMode(!highConfidenceMode)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              highConfidenceMode
+                ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+            }`}
+            title="Mostrar rostos com >= 75% de confiança"
+          >
+            <Zap size={16} />
+            {highConfidenceMode ? 'Alta Confiança' : 'Modo Normal'}
+          </button>
+
+          {/* Aprovar em Massa (só no modo alta confiança) */}
+          {highConfidenceMode && faces.length > 0 && (
+            <button
+              onClick={handleBulkApprove}
+              disabled={approvingBulk}
+              className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm font-medium text-white disabled:opacity-50"
+              title="Aprovar todos os rostos de alta confiança"
+            >
+              <Check size={16} />
+              {approvingBulk ? 'Aprovando...' : `Aprovar ${faces.length}`}
+            </button>
+          )}
+
+          {/* Limpeza */}
+          <button
+            onClick={handleCleanup}
+            disabled={cleaningUp}
+            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm font-medium text-white disabled:opacity-50"
+            title="Remover faces de baixa confiança"
+          >
+            <Trash2 size={16} />
+            {cleaningUp ? 'Limpando...' : 'Limpeza'}
+          </button>
         </div>
       </div>
 
       {faces.length === 0 ? (
         <div className="text-center text-gray-500 py-16">
           <Check size={48} className="mx-auto mb-4 opacity-30" />
-          <p>Todos os rostos foram revisados!</p>
+          <p>
+            {highConfidenceMode
+              ? 'Nenhum rosto com >= 75% de confiança'
+              : 'Todos os rostos foram revisados!'}
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
@@ -139,7 +275,7 @@ function FaceReview() {
                 title="Duplo clique para abrir foto"
               >
                 <img
-                  src={getFaceThumbnailUrl(face.id, 200)}
+                  src={thumbUrls[face.id] || getFaceThumbnailUrl(face.id, 200)}
                   alt={`Rosto ${face.id}`}
                   className="w-full h-full object-cover"
                   loading="lazy"

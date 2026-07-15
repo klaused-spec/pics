@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp } from 'lucide-react'
-import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, databaseAudit, getJobs } from '../api'
+import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X } from 'lucide-react'
+import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob } from '../api'
 
 export default function Maintenance() {
   const [audit, setAudit] = useState(null)
@@ -9,6 +9,7 @@ export default function Maintenance() {
   const [jobs, setJobs] = useState([])
   const [expanded, setExpanded] = useState(true)
   const [message, setMessage] = useState(null)
+  const [resumingJobId, setResumingJobId] = useState(null)
 
   useEffect(() => {
     loadAudit()
@@ -48,13 +49,55 @@ export default function Maintenance() {
       else if (action === 'faces') await startFaceDetection()
       else if (action === 'full') await startFullPipeline()
       else if (action === 'purge') await startPurgeMissing()
-      
-      setMessage({ type: 'success', text: `${name} iniciado em background` })
-      loadJobs()
+      else if (action === 'warmup_cache') {
+        await startThumbnailWarmup()
+        setMessage({ type: 'success', text: 'Cache de thumbnails iniciado em segundo plano.' })
+        loadJobs()
+      }
+      else if (action === 'clear_jobs') {
+        await deleteAllJobs()
+        setMessage({ type: 'success', text: 'Histórico de jobs limpo com sucesso.' })
+        loadJobs()
+      }
+      else if (action === 'resume_interrupted') {
+        const res = await resumeInterruptedJobs()
+        if (res.data.count > 0) {
+          setMessage({ type: 'success', text: `Retomando ${res.data.count} job(s) interrompido(s)` })
+          loadJobs()
+        } else {
+          setMessage({ type: 'success', text: 'Nenhum job interrompido para retomar' })
+        }
+      }
+      else {
+        setMessage({ type: 'success', text: `${name} iniciado em background` })
+        loadJobs()
+      }
     } catch (err) {
-      setMessage({ type: 'error', text: `Erro ao iniciar ${name}` })
+      setMessage({ type: 'error', text: err.response?.data?.detail || `Erro ao iniciar ${name}` })
     }
     setExecuting(null)
+  }
+
+  async function handleDeleteJob(jobId) {
+    try {
+      await deleteJob(jobId)
+      setMessage({ type: 'success', text: 'Job removido do histórico' })
+      loadJobs()
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Erro ao remover job' })
+    }
+  }
+
+  async function handleResumeJob(jobId) {
+    setResumingJobId(jobId)
+    try {
+      await resumeJob(jobId)
+      setMessage({ type: 'success', text: 'Job agendado para retomada' })
+      loadJobs()
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Erro ao retomar job' })
+    }
+    setResumingJobId(null)
   }
 
   if (loading) {
@@ -88,6 +131,7 @@ export default function Maintenance() {
     face_detect: 'Detecção Facial',
     sync: 'Sync',
     purge_missing: 'Limpar Missing',
+    thumbnail_warmup: 'Warmup de Thumbnails',
   }
 
   const maintenanceActions = [
@@ -134,6 +178,31 @@ export default function Maintenance() {
       label: 'Pipeline Completo',
       description: 'Executa: Sync → Scan → IA → Faces',
       name: 'Full pipeline',
+    },
+    {
+      action: 'warmup_cache',
+      icon: <Database className="w-4 h-4" />,
+      label: 'Cache de Thumbnails',
+      description: 'Pré-gera thumbnails para abrir galeria rápido',
+      name: 'Thumbnail cache warmup',
+    },
+    {
+      action: 'resume_interrupted',
+      icon: <RotateCcw className="w-4 h-4" />,
+      label: 'Retomar Interrompidos',
+      description: 'Continua jobs que foram interrompidos',
+      name: 'Resume interrupted',
+    },
+    {
+      action: 'clear_jobs',
+      icon: <Trash2 className="w-4 h-4" />,
+      label: 'Limpar histórico de jobs',
+      description: 'Remove jobs anteriores do histórico do backend',
+      name: 'Clear jobs',
+      destructive: true,
+      confirm: true,
+      confirmMessage: 'Apagar o histórico de jobs concluídos/erro? Jobs em execução não serão removidos.',
+      allowWhileRunning: true,
     },
   ]
 
@@ -212,13 +281,13 @@ export default function Maintenance() {
               action={item.action}
               executing={executing}
               onClick={() => {
-                if (item.confirm && !window.confirm(`Remover ${audit?.missing || 0} arquivos missing do banco?`)) {
+                if (item.confirm && !window.confirm(item.confirmMessage || `Remover ${audit?.missing || 0} arquivos missing do banco?`)) {
                   return
                 }
                 handleAction(item.action, item.name)
               }}
               destructive={item.destructive}
-              disabled={hasRunningJobs}
+              disabled={hasRunningJobs && !item.allowWhileRunning}
             />
           ))}
         </div>
@@ -249,18 +318,39 @@ export default function Maintenance() {
               </div>
             ) : (
               jobs.map((job) => (
-                <div key={job.id} className="border rounded-lg p-3 bg-gray-50">
+                <div key={job.id} className="border rounded-lg p-3 bg-white text-gray-900">
                   <div className="flex items-center justify-between mb-2">
                     <div>
-                      <p className="font-medium text-sm">{jobLabels[job.job_type] || job.job_type}</p>
+                      <p className="font-medium text-sm text-gray-900">{jobLabels[job.job_type] || job.job_type}</p>
                       <p className="text-xs text-gray-500">
                         {job.status} · {formatJobDate(job.started_at || job.created_at)}
                         {job.completed_at ? ` · finalizado ${formatJobDate(job.completed_at)}` : ''}
                       </p>
                     </div>
-                    <p className="text-xs text-gray-500">
-                      {job.total_items > 0 ? `${Math.round(job.progress || 0)}%` : job.status === 'running' ? 'Em execução' : job.status === 'completed' ? 'Concluído' : 'Aguardando'}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs text-gray-500">
+                        {job.total_items > 0 ? `${Math.round(job.progress || 0)}%` : job.status === 'running' ? 'Em execução' : job.status === 'completed' ? 'Concluído' : 'Aguardando'}
+                      </p>
+                      {job.status === 'interrupted' && (
+                        <button
+                          onClick={() => handleResumeJob(job.id)}
+                          disabled={resumingJobId === job.id}
+                          className="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded hover:bg-yellow-200 disabled:opacity-50"
+                          title="Retomar este job"
+                        >
+                          {resumingJobId === job.id ? 'Retomando...' : 'Retomar'}
+                        </button>
+                      )}
+                      {job.status !== 'running' && (
+                        <button
+                          onClick={() => handleDeleteJob(job.id)}
+                          className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200"
+                          title="Remover do histórico"
+                        >
+                          Excluir
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {job.total_items > 0 ? (
                     <div className="w-full bg-gray-200 rounded-full h-2">

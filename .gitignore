@@ -35,3 +35,24 @@ Thumbs.db
 # Dados locais
 *.thumb.jpg
 FOTOS/
+
+# Banco de dados SQLite (arquivos e sidecars)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Artefatos de build / binarios
+*.apk
+mobile/pics-mobile-debug-apk/
+*.zip
+
+# Lixo do Windows (Alternate Data Streams marcados como arquivo)
+*Zone.Identifier
+*:Zone.Identifier
+
+# Scripts locais com tokens/segredos e diagnostico (nao versionar)
+debug_token.js
+test_token.py
+test_new_token.py
+backend/get-pip.py

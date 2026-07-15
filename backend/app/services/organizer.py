@@ -221,6 +221,12 @@ def get_media_type(filepath: str) -> str:
     return "unknown"
 
 
+def is_auxiliary_thumbnail_file(filename: str) -> bool:
+    """Ignora thumbs de vídeo e outros arquivos auxiliares gerados."""
+    lower = filename.lower()
+    return lower.endswith(".thumb.jpg") or lower.endswith(".thumb.png")
+
+
 def get_image_dimensions(filepath: str) -> tuple[Optional[int], Optional[int]]:
     """Retorna largura e altura de uma imagem."""
     try:
@@ -276,13 +282,38 @@ def generate_video_thumbnail(video_path: str, output_path: str) -> bool:
 
         result = subprocess.run(
             ["ffmpeg", "-y", "-ss", str(seek_time), "-i", video_path,
-             "-vframes", "1", "-q:v", "3", output_path],
+             "-vframes", "1", "-q:v", "3", "-f", "image2", output_path],
             capture_output=True, timeout=30,
         )
         return result.returncode == 0 and os.path.exists(output_path)
     except Exception as e:
         logger.debug(f"Erro ao gerar thumbnail de vídeo: {e}")
         return False
+
+
+def generate_image_thumbnail(image_path: str, output_path: str, size: int = 300) -> bool:
+    """Gera e salva thumbnail de imagem em cache."""
+    try:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        img = Image.open(image_path)
+        img.thumbnail((size, size))
+        
+        # Converte para RGB se necessário
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        
+        img.save(output_path, format="JPEG", quality=80)
+        return True
+    except Exception as e:
+        logger.debug(f"Erro ao gerar thumbnail de imagem: {e}")
+        return False
+
+
+def get_cached_thumbnail_path(media_id: int, media_filename: str) -> str:
+    """Retorna o caminho do thumbnail em cache."""
+    thumb_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
+    return os.path.join(thumb_dir, f"{media_id}_{Path(media_filename).stem}.jpg")
 
 
 def scan_source_directory(db: Session) -> list[str]:
@@ -301,6 +332,9 @@ def scan_source_directory(db: Session) -> list[str]:
         if '.trash' in root or '.thumbnails' in root:
             continue
         for filename in files:
+            if is_auxiliary_thumbnail_file(filename):
+                continue
+
             filepath = os.path.join(root, filename)
             ext = Path(filepath).suffix.lower()
 
@@ -350,7 +384,7 @@ def scan_library_directories(db: Session) -> list[str]:
             if '.thumbnails' in root or '.trash' in root:
                 continue
             for filename in files:
-                if '_transcoded' in filename or filename.endswith(('.lock', '.progress')):
+                if is_auxiliary_thumbnail_file(filename) or '_transcoded' in filename or filename.endswith(('.lock', '.progress')):
                     continue
                 filepath = os.path.join(root, filename)
                 ext = Path(filepath).suffix.lower()

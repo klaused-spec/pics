@@ -16,9 +16,24 @@ from app.services.organizer import scan_source_directory, scan_library_directori
 from app.services.duplicates import update_perceptual_hash, check_duplicate, compute_perceptual_hash
 from app.services.ai_vision import process_media_ai
 from app.services.face_recognition_service import process_faces_in_media, cluster_unknown_faces
+from app.services.file_ops import media_file_operation_lock
 from app.services.organizer import compute_sha256
 
 logger = logging.getLogger(__name__)
+
+
+def safe_commit(db: Session, context: str = "") -> bool:
+    """Attempt to commit the session; rollback on failure and log error."""
+    try:
+        db.commit()
+        return True
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error(f"DB commit failed during {context}: {e}")
+        return False
 
 
 def _create_job(job_type: str):
@@ -110,6 +125,11 @@ def run_scan_and_organize() -> int:
     """
     Job principal: escaneia source + library_folders + organized e processa arquivos novos.
     """
+    with media_file_operation_lock:
+        return _run_scan_and_organize_locked()
+
+
+def _run_scan_and_organize_locked() -> int:
     db = SessionLocal()
     try:
         job = ProcessingJob(
@@ -249,6 +269,10 @@ def run_ai_processing(batch_size: int = None) -> int:
     """
     Processa mídias pendentes com Azure OpenAI Vision.
     """
+    if not settings.ai_processing_enabled:
+        logger.info("Processamento IA ignorado: AI_PROCESSING_ENABLED=false")
+        return 0
+
     if batch_size is None:
         batch_size = settings.batch_size
 
@@ -315,7 +339,7 @@ def run_face_detection(batch_size: int = None) -> int:
             started_at=datetime.datetime.utcnow(),
         )
         db.add(job)
-        db.commit()
+        safe_commit(db, "create face_detect job")
 
         # Busca imagens organizadas que não têm rostos processados
         pending = db.query(Media).filter(
@@ -326,7 +350,7 @@ def run_face_detection(batch_size: int = None) -> int:
         ).limit(batch_size).all()
 
         job.total_items = len(pending)
-        db.commit()
+        safe_commit(db, "set job.total_items")
 
         processed = 0
         total_faces = 0
@@ -337,11 +361,15 @@ def run_face_detection(batch_size: int = None) -> int:
                 media.faces_processed = True
                 processed += 1
                 job.processed_items = processed
-                db.commit()
+                if not safe_commit(db, f"processing media {media.filename}"):
+                    # If commit fails, mark job as failed and continue gracefully
+                    logger.error(f"Commit failed for media {media.filename}; continuing")
+                    continue
             except Exception as e:
                 logger.error(f"Erro na detecção facial para {media.filename}: {e}")
                 media.faces_processed = True  # Marca como processado mesmo com erro para não retentar infinitamente
-                db.commit()
+                safe_commit(db, f"error handling media {media.filename}")
+                continue
                 continue
 
         # Tenta agrupar rostos desconhecidos
@@ -349,13 +377,110 @@ def run_face_detection(batch_size: int = None) -> int:
 
         job.status = "completed"
         job.completed_at = datetime.datetime.utcnow()
-        db.commit()
+        safe_commit(db, "finalize face_detect job")
 
         logger.info(f"Faces: {processed} mídias, {total_faces} rostos detectados")
         return processed
 
     except Exception as e:
         logger.error(f"Erro no job de face detection: {e}")
+        job.status = "failed"
+        job.error_message = str(e)
+        safe_commit(db, "fail face_detect job")
+        return 0
+    finally:
+        db.close()
+
+
+def run_thumbnail_warmup(size: int = 300) -> int:
+    """
+    Pré-gera thumbnails em cache para mídias organizadas.
+    """
+    db = SessionLocal()
+    try:
+        existing = db.query(ProcessingJob).filter(
+            ProcessingJob.job_type == "thumbnail_warmup",
+            ProcessingJob.status == "running",
+        ).first()
+        if existing:
+            logger.warning("Thumbnail warmup duplicado detectado; abortando segundo job.")
+            return 0
+
+        job = ProcessingJob(
+            job_type="thumbnail_warmup",
+            status="running",
+            started_at=datetime.datetime.utcnow(),
+        )
+        db.add(job)
+        db.commit()
+
+        media_items = db.query(Media).filter(
+            Media.is_duplicate == False,
+            Media.is_organized == True,
+        ).all()
+
+        job.total_items = len(media_items)
+        db.commit()
+
+        from app.services.organizer import get_cached_thumbnail_path, generate_image_thumbnail, generate_video_thumbnail
+        from PIL import Image
+
+        processed = 0
+        for media in media_items:
+            try:
+                cache_path = get_cached_thumbnail_path(media.id, media.filename)
+                source_path = media.organized_path or media.original_path
+                if not os.path.exists(source_path):
+                    logger.warning(f"Thumbnail warmup: arquivo não encontrado {source_path}")
+                else:
+                    if os.path.exists(cache_path):
+                        try:
+                            source_mtime = os.path.getmtime(source_path)
+                            cache_mtime = os.path.getmtime(cache_path)
+                            if cache_mtime >= source_mtime:
+                                processed += 1
+                                job.processed_items = processed
+                                db.commit()
+                                continue
+                        except Exception:
+                            pass
+
+                    if media.media_type == "image":
+                        generate_image_thumbnail(source_path, cache_path, size=size)
+                    else:
+                        thumb_tmp = cache_path + ".tmp"
+                        if generate_video_thumbnail(source_path, thumb_tmp):
+                            try:
+                                img = Image.open(thumb_tmp)
+                                img.thumbnail((size, size))
+                                if img.mode in ("RGBA", "P"):
+                                    img = img.convert("RGB")
+                                img.save(cache_path, format="JPEG", quality=80)
+                            except Exception as e:
+                                logger.debug(f"Erro ao salvar thumbnail de vídeo {source_path}: {e}")
+                            finally:
+                                if os.path.exists(thumb_tmp):
+                                    os.unlink(thumb_tmp)
+
+                processed += 1
+                job.processed_items = processed
+                db.commit()
+            except Exception as e:
+                logger.error(f"Erro no thumbnail warmup para {media.filename}: {e}")
+                processed += 1
+                job.processed_items = processed
+                db.commit()
+                continue
+
+        job.status = "completed"
+        job.completed_at = datetime.datetime.utcnow()
+        db.commit()
+
+        logger.info(f"Thumbnail warmup completo: {processed}/{len(media_items)} mídias processadas")
+        return processed
+
+    except Exception as e:
+        logger.error(f"Erro no job de thumbnail warmup: {e}")
         job.status = "failed"
         job.error_message = str(e)
         db.commit()
@@ -372,11 +497,23 @@ def run_sync() -> dict:
     - Adiciona arquivos novos encontrados na pasta organizada
     Não renomeia — o nome do arquivo nunca muda.
     """
+    with media_file_operation_lock:
+        return _run_sync_locked()
+
+
+def _run_sync_locked() -> dict:
     db = SessionLocal()
     try:
         removed = 0
         moved = 0
         added = 0
+
+        def update_media_path(media: Media, path: str) -> None:
+            media.original_path = path
+            media.organized_path = path
+            media.filename = os.path.basename(path)
+            media.is_organized = True
+            media.missing_since = None
 
         # 1. Verifica arquivos que sumiram ou mudaram de lugar (INCLUI DUPLICATAS também!)
         all_media = db.query(Media).filter(
@@ -394,7 +531,7 @@ def run_sync() -> dict:
                         break
                 if found_path:
                     # Moveu de pasta - atualiza path (mantém faces, AI, tags, tudo)
-                    media.organized_path = found_path
+                    update_media_path(media, found_path)
                     moved += 1
                     logger.info(f"Movido: {media.filename} -> {found_path}")
                 else:
@@ -436,6 +573,20 @@ def run_sync() -> dict:
                     # Arquivo novo - adiciona ao banco
                     try:
                         file_hash = compute_sha256(filepath)
+                        moved_existing = next(
+                            (
+                                candidate for candidate in db.query(Media).filter(Media.sha256_hash == file_hash).all()
+                                if candidate.organized_path and not os.path.exists(candidate.organized_path)
+                            ),
+                            None,
+                        )
+                        if moved_existing:
+                            if moved_existing.organized_path != filepath:
+                                update_media_path(moved_existing, filepath)
+                                moved += 1
+                                logger.info(f"Movido por hash: {filename} -> {filepath}")
+                            continue
+
                         # Verifica duplicata por hash
                         dup = db.query(Media).filter(
                             Media.sha256_hash == file_hash,
@@ -575,12 +726,10 @@ def run_database_audit() -> dict:
         ).count()
         
         # Faces órfãs (referência a mídia deletada)
-        orphan_faces = 0
-        all_faces = db.query(Face).all()
-        for face in all_faces:
-            if not face.media_items:
-                orphan_faces += 1
-                logger.warning(f"Face órfã encontrada: {face.id}")
+        orphan_faces = db.query(Face).outerjoin(
+            media_faces,
+            Face.id == media_faces.c.face_id,
+        ).filter(media_faces.c.media_id.is_(None)).count()
         
         report = {
             "total_media": total_media,
@@ -602,12 +751,16 @@ def run_database_audit() -> dict:
 
 def _find_file_by_name(filename: str, base_dir: str) -> str | None:
     """Busca arquivo pelo nome nas subpastas do diretório organizado."""
+    root_match = None
     for root, _dirs, files in os.walk(base_dir):
         if '.thumbnails' in root or '.trash' in root:
             continue
         if filename in files:
-            return os.path.join(root, filename)
-    return None
+            path = os.path.join(root, filename)
+            if root != base_dir:
+                return path
+            root_match = path
+    return root_match
 
 
 def _remove_media_and_faces(media: Media, db: Session):

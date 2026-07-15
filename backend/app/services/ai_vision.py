@@ -5,6 +5,9 @@ Usa GPT-4 Vision para descrever cenas, identificar locais e objetos.
 import base64
 import logging
 import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -104,28 +107,123 @@ def analyze_video_thumbnail(filepath: str) -> Optional[dict]:
     """
     Extrai um frame do vídeo e analisa usando GPT-4 Vision.
     """
-    try:
-        import ffmpeg
+    with tempfile.TemporaryDirectory() as temp_dir:
+        thumb_png = os.path.join(temp_dir, f"{Path(filepath).stem}.thumb.png")
+        thumb_jpg = os.path.join(temp_dir, f"{Path(filepath).stem}.thumb.jpg")
+        thumb_path = thumb_png
 
-        # Extrai frame no segundo 1 do vídeo
-        thumb_path = filepath + ".thumb.jpg"
-        (
-            ffmpeg
-            .input(filepath, ss=1)
-            .output(thumb_path, vframes=1, format="image2", vcodec="mjpeg")
-            .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
-        )
+        def run_extraction(cmd):
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
 
-        result = analyze_image(thumb_path)
+        def log_ffmpeg_failure(stage: str, cmd, result):
+            logger.error(
+                "Erro ao analisar vídeo %s (%s): ffmpeg retornou código %s\n"
+                "comando: %s\n"
+                "stdout:\n%s\n"
+                "stderr:\n%s",
+                filepath,
+                stage,
+                result.returncode,
+                " ".join(cmd),
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
+            logger.debug("ffmpeg full stdout: %s", result.stdout)
+            logger.debug("ffmpeg full stderr: %s", result.stderr)
 
-        # Remove thumbnail temporário
-        Path(thumb_path).unlink(missing_ok=True)
-        return result
+        try:
+            Path(thumb_png).unlink(missing_ok=True)
+            Path(thumb_jpg).unlink(missing_ok=True)
+        except Exception:
+            pass
 
-    except Exception as e:
-        logger.error(f"Erro ao analisar vídeo {filepath}: {e}")
-        return None
+        png_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-i",
+            filepath,
+            "-ss",
+            "00:00:00.5",
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "rgb24",
+            "-update",
+            "1",
+            "-y",
+            thumb_png,
+        ]
+
+        jpg_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-i",
+            filepath,
+            "-ss",
+            "00:00:00.5",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-y",
+            thumb_jpg,
+        ]
+
+        try:
+            result = run_extraction(png_cmd)
+            thumb_path = thumb_png
+            if result.returncode != 0:
+                logger.warning("PNG thumbnail extraction failed for %s, trying JPG fallback.", filepath)
+                log_ffmpeg_failure("PNG extraction", png_cmd, result)
+
+                result = run_extraction(jpg_cmd)
+                thumb_path = thumb_jpg
+                if result.returncode != 0:
+                    log_ffmpeg_failure("JPG fallback", jpg_cmd, result)
+                    return None
+
+            if not Path(thumb_path).exists():
+                logger.error("Thumbnail file not found after ffmpeg extraction: %s", thumb_path)
+                return None
+
+            result_data = analyze_image(thumb_path)
+            if result_data is None and thumb_path == thumb_png:
+                logger.warning("PNG thumbnail analysis failed for %s, retrying with JPG fallback.", filepath)
+                Path(thumb_png).unlink(missing_ok=True)
+                result = run_extraction(jpg_cmd)
+                thumb_path = thumb_jpg
+                if result.returncode != 0:
+                    log_ffmpeg_failure("JPG retry", jpg_cmd, result)
+                    return None
+                if not Path(thumb_path).exists():
+                    logger.error("Thumbnail file not found after JPG retry: %s", thumb_path)
+                    return None
+                result_data = analyze_image(thumb_path)
+
+            return result_data
+        except FileNotFoundError as e:
+            logger.error(f"Erro ao analisar vídeo {filepath}: comando ffmpeg não encontrado: {e}")
+            return None
+        except subprocess.TimeoutExpired as e:
+            logger.error("Timeout ao analisar vídeo %s: %s", filepath, e)
+            return None
+        except Exception as e:
+            logger.exception("Erro inesperado ao analisar vídeo %s: %s", filepath, e)
+            return None
+        finally:
+            try:
+                Path(thumb_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def process_media_ai(media: Media, db: Session) -> None:

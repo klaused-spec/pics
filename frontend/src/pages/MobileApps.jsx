@@ -37,8 +37,7 @@ function MobileApps() {
 
   const downloadApk = async (apk) => {
     setError('')
-    const token = localStorage.getItem('access_token')
-    window.location.href = getMobileApkUrl(apk.filename, token)
+    window.location.href = getMobileApkUrl(apk.filename)
   }
 
   return (

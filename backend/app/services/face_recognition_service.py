@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sklearn.cluster import DBSCAN
 import onnxruntime as ort
 import mediapipe as mp
+from app.core.config import settings
 
 from app.models import Media, Face, Person, media_faces
 
@@ -22,7 +23,15 @@ logger = logging.getLogger(__name__)
 
 # Limiar de similaridade cosseno para considerar mesma pessoa
 # ArcFace: > 0.4 é match razoável, > 0.5 é match forte
+# Mantemos sugestão mais aberta, mas exigimos margem quando há candidatos próximos.
 SIMILARITY_THRESHOLD = 0.45
+AMBIGUOUS_MATCH_MARGIN = 0.03
+HIGH_CONFIDENCE_SUGGESTION = 0.75
+DEFAULT_AUTO_CONFIRM_SIMILARITY = 0.92
+
+# Tamanho máximo usado para detecção/alinhamento de rostos
+# Isso evita erros do OpenCV em imagens muito grandes e acelera o processamento
+MAX_FACE_IMAGE_SIDE = 2048
 
 # Caminho do modelo ArcFace
 MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models")
@@ -36,7 +45,13 @@ def _get_rec_session():
     """Retorna sessão de reconhecimento ArcFace."""
     global _rec_session
     if _rec_session is None:
-        _rec_session = ort.InferenceSession(REC_MODEL_PATH, providers=["CPUExecutionProvider"])
+        # Ajustar severidade de logs do ONNX Runtime para reduzir warnings
+        sess_options = ort.SessionOptions()
+        try:
+            sess_options.log_severity_level = int(settings.ort_log_severity)
+        except Exception:
+            pass
+        _rec_session = ort.InferenceSession(REC_MODEL_PATH, sess_options=sess_options, providers=["CPUExecutionProvider"])
         logger.info("Modelo ArcFace carregado")
     return _rec_session
 
@@ -45,8 +60,8 @@ def _get_face_mesh():
     """Retorna face mesh MediaPipe para landmarks (usado após detecção)."""
     return mp.solutions.face_mesh.FaceMesh(
         static_image_mode=True,
-        max_num_faces=20,
-        min_detection_confidence=0.3,
+        max_num_faces=int(settings.face_mesh_max_num_faces),
+        min_detection_confidence=float(settings.face_mesh_min_detection_confidence),
         refine_landmarks=True,
     )
 
@@ -54,8 +69,8 @@ def _get_face_mesh():
 def _get_face_detector():
     """Retorna detector de faces MediaPipe (modelo full range, melhor para rostos distantes)."""
     return mp.solutions.face_detection.FaceDetection(
-        model_selection=1,  # 1 = full range (até 5m), 0 = short range (até 2m)
-        min_detection_confidence=0.3,
+        model_selection=int(getattr(settings, 'face_detector_model_selection', 1)),  # 1 = full range, 0 = short range
+        min_detection_confidence=float(getattr(settings, 'face_detection_min_confidence', 0.5)),
     )
 
 
@@ -66,6 +81,79 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
+
+
+def _load_confirmed_person_encodings(db: Session) -> dict[int, list[np.ndarray]]:
+    confirmed_faces = db.query(Face).filter(
+        Face.person_id.isnot(None),
+        Face.is_confirmed == True,
+        Face.is_ignored == False,
+        Face.encoding.isnot(None),
+    ).all()
+
+    person_encodings: dict[int, list[np.ndarray]] = {}
+    for face in confirmed_faces:
+        try:
+            encoding = pickle.loads(face.encoding)
+            if np.linalg.norm(encoding) > 0:
+                person_encodings.setdefault(face.person_id, []).append(encoding)
+        except Exception:
+            continue
+
+    return person_encodings
+
+
+def _score_person_match(encoding: np.ndarray, reference_encodings: list[np.ndarray]) -> float:
+    similarities = sorted(
+        (_cosine_similarity(encoding, ref) for ref in reference_encodings),
+        reverse=True,
+    )
+    if not similarities:
+        return 0.0
+    if len(similarities) == 1:
+        return similarities[0]
+
+    top_similarities = similarities[: min(5, len(similarities))]
+    return float((0.75 * top_similarities[0]) + (0.25 * np.mean(top_similarities)))
+
+
+def _rank_matching_people(
+    encoding: np.ndarray,
+    db: Session,
+    person_encodings: Optional[dict[int, list[np.ndarray]]] = None,
+) -> list[tuple[Person, float]]:
+    if person_encodings is None:
+        person_encodings = _load_confirmed_person_encodings(db)
+
+    ranked = []
+    for person_id, reference_encodings in person_encodings.items():
+        score = _score_person_match(encoding, reference_encodings)
+        if score < SIMILARITY_THRESHOLD:
+            continue
+
+        person = db.query(Person).get(person_id)
+        if person:
+            ranked.append((person, score))
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked
+
+
+def _is_clear_match(ranked_matches: list[tuple[Person, float]]) -> bool:
+    if not ranked_matches:
+        return False
+    if len(ranked_matches) == 1:
+        return True
+
+    best_score = ranked_matches[0][1]
+    second_score = ranked_matches[1][1]
+    return best_score >= HIGH_CONFIDENCE_SUGGESTION or (best_score - second_score) >= AMBIGUOUS_MATCH_MARGIN
+
+
+def _should_auto_confirm(confidence: float) -> bool:
+    if settings.face_auto_approve_high_confidence:
+        return confidence >= float(settings.face_auto_approve_min_confidence)
+    return confidence >= DEFAULT_AUTO_CONFIRM_SIMILARITY
 
 
 def _align_face(image_bgr: np.ndarray, landmarks_5: np.ndarray) -> np.ndarray:
@@ -110,6 +198,55 @@ def _get_embedding(face_img: np.ndarray) -> np.ndarray:
     return embedding
 
 
+def _load_image_for_face_detection(filepath: str) -> tuple[Optional[np.ndarray], float]:
+    """Lê a imagem e aplica downscale seguro para evitar limites do OpenCV."""
+    image_bgr = cv2.imread(filepath)
+    if image_bgr is None:
+        return None, 1.0
+
+    img_h, img_w = image_bgr.shape[:2]
+    if max(img_h, img_w) > MAX_FACE_IMAGE_SIDE:
+        scale = MAX_FACE_IMAGE_SIDE / max(img_h, img_w)
+        new_w = max(1, int(round(img_w * scale)))
+        new_h = max(1, int(round(img_h * scale)))
+        image_bgr = cv2.resize(image_bgr, (new_w, new_h))
+        return image_bgr, scale
+
+    return image_bgr, 1.0
+
+
+def _align_face(image_bgr: np.ndarray, landmarks_5: np.ndarray) -> Optional[np.ndarray]:
+    """
+    Alinha face usando transformação afim baseada em 5 landmarks.
+    Retorna imagem 112x112 alinhada para ArcFace.
+    """
+    # Template de referência para ArcFace (112x112)
+    dst = np.array([
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ], dtype=np.float32)
+
+    tform = cv2.estimateAffinePartial2D(landmarks_5, dst)[0]
+    if tform is None:
+        try:
+            tform = cv2.getAffineTransform(landmarks_5[:3], dst[:3])
+        except Exception:
+            return None
+
+    if tform is None or not np.isfinite(tform).all():
+        return None
+
+    try:
+        aligned = cv2.warpAffine(image_bgr, tform, (112, 112), borderValue=0)
+        return aligned
+    except Exception as e:
+        logger.warning(f"Falha ao alinhar face: {e}")
+        return None
+
+
 # Índices dos 5 pontos-chave no MediaPipe Face Mesh (468 landmarks)
 # Olho esquerdo, olho direito, nariz, canto esquerdo boca, canto direito boca
 MEDIAPIPE_5_LANDMARKS = {
@@ -121,19 +258,77 @@ MEDIAPIPE_5_LANDMARKS = {
 }
 
 
+def _deduplicate_faces(faces: list[dict], iou_threshold: float = 0.5) -> list[dict]:
+    """
+    Remove faces duplicadas usando NMS (Non-Maximum Suppression).
+    Mantém faces com maior probabilidade (aqui, pela ordem: mesh faces > detection fallback).
+    """
+    if not faces:
+        return []
+    
+    # Ordenar por confiança (mesh_faces aparecem primeiro na lista, então têm prioridade)
+    result = []
+    used_indices = set()
+    
+    for i, face_i in enumerate(faces):
+        if i in used_indices:
+            continue
+        
+        result.append(face_i)
+        
+        # Comparar com todas as outras faces
+        for j in range(i + 1, len(faces)):
+            if j in used_indices:
+                continue
+            
+            face_j = faces[j]
+            
+            # Calcular IoU entre face_i e face_j
+            x1_min = face_i["bbox_x"]
+            y1_min = face_i["bbox_y"]
+            x1_max = face_i["bbox_x"] + face_i["bbox_width"]
+            y1_max = face_i["bbox_y"] + face_i["bbox_height"]
+            
+            x2_min = face_j["bbox_x"]
+            y2_min = face_j["bbox_y"]
+            x2_max = face_j["bbox_x"] + face_j["bbox_width"]
+            y2_max = face_j["bbox_y"] + face_j["bbox_height"]
+            
+            # Interseção
+            ix_min = max(x1_min, x2_min)
+            iy_min = max(y1_min, y2_min)
+            ix_max = min(x1_max, x2_max)
+            iy_max = min(y1_max, y2_max)
+            
+            if ix_min < ix_max and iy_min < iy_max:
+                inter = (ix_max - ix_min) * (iy_max - iy_min)
+                area_i = face_i["bbox_width"] * face_i["bbox_height"]
+                area_j = face_j["bbox_width"] * face_j["bbox_height"]
+                union = area_i + area_j - inter
+                
+                if union > 0:
+                    iou = inter / union
+                    if iou >= iou_threshold:
+                        used_indices.add(j)
+    
+    return result
+
+
 def detect_faces_in_image(filepath: str) -> list[dict]:
     """
     Detecta rostos usando MediaPipe Face Detection (full range) + Face Mesh para landmarks.
     Face Detection captura rostos distantes; Face Mesh fornece landmarks para alinhamento ArcFace.
     Para rostos detectados sem landmarks (muito pequenos), usa crop direto redimensionado.
+    Deduplicação final com NMS remove faces na mesma posição.
     """
     try:
-        image_bgr = cv2.imread(filepath)
+        image_bgr, scale = _load_image_for_face_detection(filepath)
         if image_bgr is None:
             return []
 
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         img_h, img_w = image_bgr.shape[:2]
+        scale_inv = 1.0 / scale
 
         # Fase 1: Detecta rostos com Face Detection (full range - rostos distantes)
         detected_boxes = []
@@ -146,7 +341,6 @@ def detect_faces_in_image(filepath: str) -> list[dict]:
                     y = max(0, int(bbox.ymin * img_h))
                     w = int(bbox.width * img_w)
                     h = int(bbox.height * img_h)
-                    # Garante que não sai da imagem
                     x = min(x, img_w - 1)
                     y = min(y, img_h - 1)
                     w = min(w, img_w - x)
@@ -185,13 +379,16 @@ def detect_faces_in_image(filepath: str) -> list[dict]:
                     ], dtype=np.float32)
 
                     aligned = _align_face(image_bgr, landmarks_5)
+                    if aligned is None:
+                        continue
+
                     embedding = _get_embedding(aligned)
 
                     mesh_faces.append({
-                        "bbox_x": bbox_x,
-                        "bbox_y": bbox_y,
-                        "bbox_width": bbox_w,
-                        "bbox_height": bbox_h,
+                        "bbox_x": int(round(bbox_x * scale_inv)),
+                        "bbox_y": int(round(bbox_y * scale_inv)),
+                        "bbox_width": int(round(bbox_w * scale_inv)),
+                        "bbox_height": int(round(bbox_h * scale_inv)),
                         "encoding": embedding,
                     })
 
@@ -200,24 +397,37 @@ def detect_faces_in_image(filepath: str) -> list[dict]:
         faces = list(mesh_faces)
 
         for (dx, dy, dw, dh) in detected_boxes:
-            # Verifica se já temos esse rosto via Face Mesh (overlap > 50%)
             already_found = False
             for mf in mesh_faces:
                 mx, my, mw, mh = mf["bbox_x"], mf["bbox_y"], mf["bbox_width"], mf["bbox_height"]
-                # Calcula IoU simplificado (intersecção sobre menor área)
-                ix = max(dx, mx)
-                iy = max(dy, my)
-                ix2 = min(dx + dw, mx + mw)
-                iy2 = min(dy + dh, my + mh)
+                # Converter coordenadas para espaço da imagem downscaled para comparação
+                mx_scaled = int(round(mx * scale))
+                my_scaled = int(round(my * scale))
+                mw_scaled = int(round(mw * scale))
+                mh_scaled = int(round(mh * scale))
+                
+                # Calcular interseção
+                ix = max(dx, mx_scaled)
+                iy = max(dy, my_scaled)
+                ix2 = min(dx + dw, mx_scaled + mw_scaled)
+                iy2 = min(dy + dh, my_scaled + mh_scaled)
+                
                 if ix < ix2 and iy < iy2:
+                    # Calcular IoU corretamente: inter / (area1 + area2 - inter)
                     inter = (ix2 - ix) * (iy2 - iy)
-                    min_area = min(dw * dh, mw * mh)
-                    if min_area > 0 and inter / min_area > 0.3:
-                        already_found = True
-                        break
+                    area_detection = dw * dh
+                    area_mesh = mw_scaled * mh_scaled
+                    union = area_detection + area_mesh - inter
+                    
+                    if union > 0:
+                        iou = inter / union
+                        # Threshold aumentado de 0.3 para 0.5 para evitar duplicatas
+                        # IoU >= 0.5 garante que ~50% da menor face se sobrepõe
+                        if iou >= 0.5:
+                            already_found = True
+                            break
 
             if not already_found:
-                # Crop com margem e resize para ArcFace
                 margin = int(max(dw, dh) * 0.2)
                 cx = max(0, dx - margin)
                 cy = max(0, dy - margin)
@@ -228,13 +438,15 @@ def detect_faces_in_image(filepath: str) -> list[dict]:
                     face_112 = cv2.resize(crop, (112, 112))
                     embedding = _get_embedding(face_112)
                     faces.append({
-                        "bbox_x": dx,
-                        "bbox_y": dy,
-                        "bbox_width": dw,
-                        "bbox_height": dh,
+                        "bbox_x": int(round(dx * scale_inv)),
+                        "bbox_y": int(round(dy * scale_inv)),
+                        "bbox_width": int(round(dw * scale_inv)),
+                        "bbox_height": int(round(dh * scale_inv)),
                         "encoding": embedding,
                     })
 
+        # Deduplicação final: Remove faces duplicadas na mesma posição
+        faces = _deduplicate_faces(faces, iou_threshold=float(settings.face_dedup_iou_threshold))
         return faces
 
     except Exception as e:
@@ -249,41 +461,11 @@ def find_matching_person(encoding: np.ndarray, db: Session) -> Optional[tuple[Pe
     Compara por similaridade cosseno (ArcFace embeddings).
     Retorna (Person, confidence) ou None.
     """
-    confirmed_faces = db.query(Face).filter(
-        Face.person_id.isnot(None),
-        Face.is_confirmed == True,
-        Face.encoding.isnot(None),
-    ).all()
-
-    if not confirmed_faces:
+    ranked_matches = _rank_matching_people(encoding, db)
+    if not _is_clear_match(ranked_matches):
         return None
 
-    # Agrupa encodings por pessoa
-    person_encodings: dict[int, list[np.ndarray]] = {}
-    for face in confirmed_faces:
-        try:
-            enc = pickle.loads(face.encoding)
-            if face.person_id not in person_encodings:
-                person_encodings[face.person_id] = []
-            person_encodings[face.person_id].append(enc)
-        except Exception:
-            continue
-
-    # Compara com cada pessoa (similaridade cosseno)
-    best_match = None
-    best_similarity = SIMILARITY_THRESHOLD
-
-    for person_id, encodings in person_encodings.items():
-        similarities = [_cosine_similarity(encoding, enc) for enc in encodings]
-        max_similarity = max(similarities)
-
-        if max_similarity > best_similarity:
-            best_similarity = max_similarity
-            person = db.query(Person).get(person_id)
-            if person:
-                best_match = (person, max_similarity)
-
-    return best_match
+    return ranked_matches[0]
 
 
 def process_faces_in_media(media: Media, db: Session) -> list[Face]:
@@ -333,7 +515,7 @@ def process_faces_in_media(media: Media, db: Session) -> list[Face]:
             person, confidence = match
             face.person_id = person.id
             face.confidence = confidence
-            face.is_confirmed = False  # Sugestão - aguarda aprovação
+            face.is_confirmed = _should_auto_confirm(confidence)
 
         db.add(face)
         db.flush()
@@ -417,6 +599,70 @@ def assign_face_to_person(face_id: int, person_id: int, db: Session) -> None:
         _propagate_suggestions(face, person_id, db)
 
 
+def confirm_face_identity(face_id: int, db: Session) -> Face:
+    """Confirma uma sugestão existente e reaplica aprendizado para rostos similares."""
+    face = db.query(Face).get(face_id)
+    if not face:
+        raise ValueError("Rosto não encontrado")
+    if not face.person_id:
+        raise ValueError("Rosto não tem pessoa sugerida")
+
+    face.is_confirmed = True
+    face.confidence = 1.0
+    person_id = face.person_id
+    db.commit()
+
+    _propagate_suggestions(face, person_id, db)
+    refresh_face_suggestions(db)
+    return face
+
+
+def refresh_face_suggestions(db: Session) -> dict:
+    """
+    Recalcula sugestões para rostos pendentes usando todas as faces já confirmadas.
+    Útil depois de o usuário identificar várias pessoas manualmente.
+    """
+    person_encodings = _load_confirmed_person_encodings(db)
+    if not person_encodings:
+        return {"suggested": 0, "cleared": 0, "confirmed_references": 0}
+
+    reference_count = sum(len(encodings) for encodings in person_encodings.values())
+    pending_faces = db.query(Face).filter(
+        Face.is_confirmed == False,
+        Face.is_ignored == False,
+        Face.encoding.isnot(None),
+    ).all()
+
+    suggested = 0
+    cleared = 0
+    for face in pending_faces:
+        try:
+            encoding = pickle.loads(face.encoding)
+        except Exception:
+            continue
+
+        ranked_matches = _rank_matching_people(encoding, db, person_encodings)
+        if _is_clear_match(ranked_matches):
+            person, confidence = ranked_matches[0]
+            if face.person_id != person.id or face.confidence != confidence:
+                suggested += 1
+            face.person_id = person.id
+            face.confidence = float(confidence)
+            face.is_confirmed = _should_auto_confirm(confidence)
+        elif face.person_id is not None:
+            face.person_id = None
+            face.confidence = None
+            face.is_confirmed = False
+            cleared += 1
+
+    db.commit()
+    logger.info(
+        f"Sugestões recalculadas: {suggested} atualizadas, {cleared} ambíguas limpas, "
+        f"{reference_count} referências confirmadas"
+    )
+    return {"suggested": suggested, "cleared": cleared, "confirmed_references": reference_count}
+
+
 def _propagate_suggestions(confirmed_face: Face, person_id: int, db: Session) -> int:
     """
     Após confirmar um rosto, compara com todos os rostos não identificados
@@ -427,9 +673,10 @@ def _propagate_suggestions(confirmed_face: Face, person_id: int, db: Session) ->
 
     confirmed_encoding = pickle.loads(confirmed_face.encoding)
 
-    # Busca rostos sem pessoa atribuída
+    # Busca rostos sem pessoa atribuída; sugestões existentes serão tratadas pelo refresh em lote.
     unassigned = db.query(Face).filter(
         Face.person_id.is_(None),
+        Face.is_ignored == False,
         Face.encoding.isnot(None),
         Face.id != confirmed_face.id,
     ).all()
@@ -439,7 +686,12 @@ def _propagate_suggestions(confirmed_face: Face, person_id: int, db: Session) ->
         try:
             enc = pickle.loads(face.encoding)
             sim = _cosine_similarity(confirmed_encoding, enc)
-            if sim >= SIMILARITY_THRESHOLD:
+            if _should_auto_confirm(sim):
+                face.person_id = person_id
+                face.confidence = float(sim)
+                face.is_confirmed = True
+                suggested += 1
+            elif sim >= SIMILARITY_THRESHOLD:
                 face.person_id = person_id
                 face.confidence = float(sim)
                 face.is_confirmed = False  # Sugestão, aguarda aprovação
