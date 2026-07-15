@@ -955,20 +955,23 @@ export default function App() {
   const treeMonths = useMemo(() => {
     const groups = new Map()
     for (const item of items) {
-      const folder = item.folder || ''
-      // O mês da pasta vem do caminho físico (igual ao webapp). Sem pasta ou sem
-      // padrão de data no caminho, cai no date_taken (year/month) do item.
-      const derived = folder ? folderMonthKey(folder) : null
-      const year = derived ? derived.year : (item.year || 0)
-      const month = derived ? derived.month : (item.month || 0)
+      // Igual ao webapp: a foto entra na seção do mês pela SUA data (date_taken).
+      const year = item.year || 0
+      const month = item.month || 0
       const key = `${year}-${month}`
       if (!groups.has(key)) groups.set(key, { key, year, month, count: 0, folders: new Map(), items: [] })
       const node = groups.get(key)
       node.count += 1
       node.items.push(item)
+      // Igual ao webapp: a pasta só aparece neste mês se o caminho físico do
+      // arquivo pertencer ao diretório deste mesmo mês (ex.: .../2026_05/...).
+      const folder = item.folder || ''
       if (folder) {
-        if (!node.folders.has(folder)) node.folders.set(folder, [])
-        node.folders.get(folder).push(item)
+        const derived = folderMonthKey(folder)
+        if (derived && derived.year === year && derived.month === month) {
+          if (!node.folders.has(folder)) node.folders.set(folder, [])
+          node.folders.get(folder).push(item)
+        }
       }
     }
     const list = Array.from(groups.values())
