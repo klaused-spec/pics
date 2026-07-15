@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Easing,
   FlatList,
   Image,
@@ -188,12 +189,21 @@ async function ensureMediaPermission() {
   return mediaPermissionGranted
 }
 
-// Copia o arquivo baixado para um nome original antes de mandar para a galeria,
-// preservando o nome do arquivo (o conteúdo/EXIF já vem original do servidor).
-async function stageOriginalNamed(uri, filename) {
-  if (!filename) return uri
-  const safeName = filename.replace(/[\\/]/g, '_')
-  const target = `${FileSystem.cacheDirectory}${safeName}`
+// Nome determinístico com o id do item embutido, para o app reconhecer na galeria
+// qual mídia já está baixada (ex.: pics_123_IMG_0001.jpg).
+function galleryFileName(item) {
+  const original = (item.filename || `${item.id}${extensionFromContent(item)}`).replace(/[\\/]/g, '_')
+  return `pics_${item.id}_${original}`
+}
+
+function parseGalleryId(filename) {
+  const match = String(filename || '').match(/^pics_(\d+)_/)
+  return match ? Number(match[1]) : null
+}
+
+// Prepara um arquivo temporário com o nome-chave antes de mandar para a galeria.
+async function stageForGallery(uri, item) {
+  const target = `${FileSystem.cacheDirectory}${galleryFileName(item)}`
   try {
     if (await fileExists(target)) {
       await FileSystem.deleteAsync(target, { idempotent: true })
@@ -205,37 +215,98 @@ async function stageOriginalNamed(uri, filename) {
   }
 }
 
-// Lembra se o álbum "Pics" já foi criado, para não tentar recriar/mover assets
-// (mover/adicionar assets dispara o pop-up "permitir modificar esta foto" por item).
-let picsAlbumEnsured = false
+async function getPicsAlbum() {
+  try {
+    return await MediaLibrary.getAlbumAsync(GALLERY_ALBUM)
+  } catch (_) {
+    return null
+  }
+}
 
-async function saveUriToGallery(uri, filename) {
+// Lê os ids de mídia que já estão na pasta "Pics" da galeria.
+async function listGalleryCachedIds() {
+  if (!(await hasMediaPermission())) return new Set()
+  const album = await getPicsAlbum()
+  if (!album) return new Set()
+  const ids = new Set()
+  let after
+  try {
+    do {
+      const page = await MediaLibrary.getAssetsAsync({
+        album,
+        first: 200,
+        after,
+        mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+      })
+      for (const asset of page.assets) {
+        const id = parseGalleryId(asset.filename)
+        if (id != null) ids.add(id)
+      }
+      after = page.hasNextPage ? page.endCursor : null
+    } while (after)
+  } catch (_) {}
+  return ids
+}
+
+// Encontra o asset na galeria correspondente a um item (pelo id no nome).
+async function findGalleryAsset(item) {
+  if (!(await hasMediaPermission())) return null
+  const album = await getPicsAlbum()
+  if (!album) return null
+  const wanted = `pics_${item.id}_`
+  let after
+  try {
+    do {
+      const page = await MediaLibrary.getAssetsAsync({
+        album,
+        first: 200,
+        after,
+        mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+      })
+      const found = page.assets.find((asset) => String(asset.filename || '').startsWith(wanted))
+      if (found) {
+        try {
+          const info = await MediaLibrary.getAssetInfoAsync(found)
+          return { asset: found, uri: info.localUri || found.uri }
+        } catch (_) {
+          return { asset: found, uri: found.uri }
+        }
+      }
+      after = page.hasNextPage ? page.endCursor : null
+    } while (after)
+  } catch (_) {}
+  return null
+}
+
+// Salva o arquivo baixado na pasta "Pics" da galeria e retorna a uri local do asset.
+async function saveItemToGalleryFile(tempUri, item) {
   const granted = await ensureMediaPermission()
   if (!granted) {
     const error = new Error('Permissão para a galeria negada')
     error.code = 'PERMISSION'
     throw error
   }
-  const sourceUri = await stageOriginalNamed(uri, filename)
-  // createAssetAsync grava direto na galeria sem pedir confirmação por foto.
-  const asset = await MediaLibrary.createAssetAsync(sourceUri)
+  const staged = await stageForGallery(tempUri, item)
+  const asset = await MediaLibrary.createAssetAsync(staged)
   try {
-    if (!picsAlbumEnsured) {
-      const album = await MediaLibrary.getAlbumAsync(GALLERY_ALBUM)
-      if (!album) {
-        // Cria o álbum com cópia do asset (copy=true) só na primeira vez.
-        await MediaLibrary.createAlbumAsync(GALLERY_ALBUM, asset, true)
-      }
-      picsAlbumEnsured = true
+    const album = await getPicsAlbum()
+    if (!album) {
+      await MediaLibrary.createAlbumAsync(GALLERY_ALBUM, asset, true)
+    } else {
+      await MediaLibrary.addAssetsToAlbumAsync([asset], album, true)
     }
   } catch (_) {
-    // Se o álbum não puder ser criado, o asset já está na galeria mesmo assim.
-    picsAlbumEnsured = true
+    // Se falhar o agrupamento, o asset já está na galeria.
   }
-  if (sourceUri !== uri) {
-    await FileSystem.deleteAsync(sourceUri, { idempotent: true }).catch(() => {})
+  if (staged !== tempUri) {
+    await FileSystem.deleteAsync(staged, { idempotent: true }).catch(() => {})
   }
-  return asset
+  let localUri = asset.uri
+  try {
+    const info = await MediaLibrary.getAssetInfoAsync(asset)
+    localUri = info.localUri || asset.uri
+  } catch (_) {}
+  return { asset, uri: localUri }
 }
 
 export default function App() {
@@ -288,6 +359,12 @@ export default function App() {
   useEffect(() => {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {})
     boot()
+    // Ao voltar ao app, reconcilia a tag OFFLINE com o que está na pasta Pics
+    // (caso o usuário tenha apagado fotos por fora).
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refreshCachedFullIds()
+    })
+    return () => sub.remove()
   }, [])
 
   async function boot() {
@@ -457,9 +534,9 @@ export default function App() {
 
   async function refreshCachedFullIds() {
     try {
-      const files = await FileSystem.readDirectoryAsync(FULL_DIR)
-      const ids = files.map((file) => file.match(/^(\d+)_/)?.[1]).filter(Boolean).map(Number)
-      setCachedFullIds(new Set(ids))
+      // O que está "offline" agora é o que existe na pasta "Pics" da galeria.
+      const ids = await listGalleryCachedIds()
+      setCachedFullIds(ids)
     } catch (_) {
       setCachedFullIds(new Set())
     }
@@ -469,6 +546,15 @@ export default function App() {
     setCachedFullIds((currentIds) => {
       const nextIds = new Set(currentIds)
       nextIds.add(id)
+      return nextIds
+    })
+  }
+
+  function unmarkFullCached(id) {
+    setCachedFullIds((currentIds) => {
+      if (!currentIds.has(id)) return currentIds
+      const nextIds = new Set(currentIds)
+      nextIds.delete(id)
       return nextIds
     })
   }
@@ -587,18 +673,23 @@ export default function App() {
     setFullProgress(0)
     setFullLoading(true)
     try {
-      const destination = fullPath(item)
-      if (await fileExists(destination)) {
-        setFullUri(destination)
+      // Offline = existe na pasta "Pics" da galeria. Procura lá primeiro.
+      const existing = await findGalleryAsset(item)
+      if (existing) {
+        setFullUri(existing.uri)
         markFullCached(item.id)
       } else {
-        const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
-        const downloadedUri = await downloadWithAuth(url, destination, token, setFullProgress)
-        setFullUri(downloadedUri)
-        markFullCached(item.id)
+        // Não está mais na galeria (você apagou por fora): tira a tag e baixa de novo.
+        unmarkFullCached(item.id)
+        const uri = await ensureFullDownloaded(item, setFullProgress)
+        setFullUri(uri)
       }
     } catch (error) {
-      Alert.alert('Arquivo full', error.message)
+      if (error.code === 'PERMISSION') {
+        Alert.alert('Galeria', 'Preciso de permissão de acesso às fotos para baixar e salvar na pasta Pics.')
+      } else {
+        Alert.alert('Arquivo full', error.message)
+      }
       setSelected(null)
     } finally {
       setFullLoading(false)
@@ -607,49 +698,65 @@ export default function App() {
 
   async function clearOfflineFiles() {
     try {
-      await FileSystem.deleteAsync(FULL_DIR, { idempotent: true })
-      await FileSystem.deleteAsync(THUMB_DIR, { idempotent: true })
+      const album = await getPicsAlbum()
+      if (album) {
+        const toDelete = []
+        let after
+        do {
+          const page = await MediaLibrary.getAssetsAsync({
+            album,
+            first: 200,
+            after,
+            mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+          })
+          for (const asset of page.assets) {
+            if (parseGalleryId(asset.filename) != null) toDelete.push(asset)
+          }
+          after = page.hasNextPage ? page.endCursor : null
+        } while (after)
+        if (toDelete.length) {
+          await MediaLibrary.deleteAssetsAsync(toDelete)
+        }
+      }
+      await FileSystem.deleteAsync(THUMB_DIR, { idempotent: true }).catch(() => {})
       await ensureDirectories()
       setCachedFullIds(new Set())
-      const nextItems = items.map((item) => ({ ...item, local_thumbnail_uri: null, thumbnail_failed: false }))
-      setItems(nextItems)
-      await persistItemCache(nextItems)
-      setSyncStatus('Arquivos offline removidos')
+      setSyncStatus('Fotos offline removidas da pasta Pics')
     } catch (error) {
       Alert.alert('Limpar offline', error.message)
     }
   }
 
   function confirmClearOfflineFiles() {
-    Alert.alert('Limpar offline', 'Apagar arquivos full e thumbnails baixados deste celular?', [
+    Alert.alert('Limpar offline', 'Apagar da galeria as fotos baixadas na pasta "Pics"?', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Limpar', style: 'destructive', onPress: clearOfflineFiles },
     ])
   }
 
-  async function ensureFullDownloaded(item) {
-    const destination = fullPath(item)
-    if (await fileExists(destination)) return destination
-    const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
-    const uri = await downloadWithAuth(url, destination, token)
-    markFullCached(item.id)
-    // Todo arquivo baixado offline também vai para a galeria (álbum "Pics"),
-    // mas SEM disparar pedido de permissão a cada foto: só salva se já concedida.
-    try {
-      if (await hasMediaPermission()) {
-        await saveUriToGallery(uri, item.filename)
-      }
-    } catch (_) {
-      // Falha na galeria não impede o uso offline dentro do app.
+  // Baixa o arquivo e grava na pasta "Pics" da galeria; retorna a uri local do asset.
+  async function ensureFullDownloaded(item, onProgress) {
+    const existing = await findGalleryAsset(item)
+    if (existing) {
+      markFullCached(item.id)
+      return existing.uri
     }
-    return uri
+    const temp = `${FileSystem.cacheDirectory}dl_${item.id}${extensionFromContent(item)}`
+    const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
+    await downloadWithAuth(url, temp, token, onProgress)
+    try {
+      const saved = await saveItemToGalleryFile(temp, item)
+      markFullCached(item.id)
+      return saved.uri
+    } finally {
+      await FileSystem.deleteAsync(temp, { idempotent: true }).catch(() => {})
+    }
   }
 
   async function saveItemToGallery(item) {
     setSavingGallery(true)
     try {
-      const uri = await ensureFullDownloaded(item)
-      await saveUriToGallery(uri, item.filename)
+      await ensureFullDownloaded(item)
       Alert.alert('Galeria', `Salvo em "${GALLERY_ALBUM}" na galeria do celular.`)
     } catch (error) {
       if (error.code === 'PERMISSION') {
@@ -675,8 +782,7 @@ export default function App() {
       }
       for (const item of chosen) {
         try {
-          const uri = await ensureFullDownloaded(item)
-          await saveUriToGallery(uri, item.filename)
+          await ensureFullDownloaded(item)
           ok += 1
         } catch (_) {}
       }
