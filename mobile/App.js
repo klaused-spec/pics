@@ -205,6 +205,10 @@ async function stageOriginalNamed(uri, filename) {
   }
 }
 
+// Lembra se o álbum "Pics" já foi criado, para não tentar recriar/mover assets
+// (mover/adicionar assets dispara o pop-up "permitir modificar esta foto" por item).
+let picsAlbumEnsured = false
+
 async function saveUriToGallery(uri, filename) {
   const granted = await ensureMediaPermission()
   if (!granted) {
@@ -213,16 +217,20 @@ async function saveUriToGallery(uri, filename) {
     throw error
   }
   const sourceUri = await stageOriginalNamed(uri, filename)
+  // createAssetAsync grava direto na galeria sem pedir confirmação por foto.
   const asset = await MediaLibrary.createAssetAsync(sourceUri)
   try {
-    const album = await MediaLibrary.getAlbumAsync(GALLERY_ALBUM)
-    if (album) {
-      await MediaLibrary.addAssetsToAlbumAsync([asset], album, false)
-    } else {
-      await MediaLibrary.createAlbumAsync(GALLERY_ALBUM, asset, false)
+    if (!picsAlbumEnsured) {
+      const album = await MediaLibrary.getAlbumAsync(GALLERY_ALBUM)
+      if (!album) {
+        // Cria o álbum com cópia do asset (copy=true) só na primeira vez.
+        await MediaLibrary.createAlbumAsync(GALLERY_ALBUM, asset, true)
+      }
+      picsAlbumEnsured = true
     }
   } catch (_) {
-    // Se a organização em álbum falhar, o asset já está na galeria mesmo assim.
+    // Se o álbum não puder ser criado, o asset já está na galeria mesmo assim.
+    picsAlbumEnsured = true
   }
   if (sourceUri !== uri) {
     await FileSystem.deleteAsync(sourceUri, { idempotent: true }).catch(() => {})
