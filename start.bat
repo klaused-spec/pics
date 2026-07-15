@@ -1,85 +1,90 @@
 @echo off
-setlocal enabledelayedexpansion
-title PICS - Backend + Frontend
+chcp 65001 >nul
+title PICS - Backend + Caddy HTTPS
 color 0A
+setlocal
 
 echo.
 echo ========================================
 echo === PICS - Sistema de Fotos e IA ===
 echo ========================================
 echo.
+echo [INFO] Iniciando backend + Caddy HTTPS nativamente no Windows...
 
-REM Verificar se WSL está instalado
-wsl --version >nul 2>&1
-if errorlevel 1 (
-    echo [ERRO] WSL nao esta instalado ou nao esta no PATH
-    echo.
-    echo Para usar este script no Windows, instale WSL2:
-    echo   https://learn.microsoft.com/pt-br/windows/wsl/install
-    echo.
-    pause
-    exit /b 1
-)
+set "ROOT=%~dp0"
+set "CADDY_EXE=C:\caddy\caddy.exe"
+set "CADDYFILE=%ROOT%Caddyfile"
+set "FRONTEND_DIST=%ROOT%frontend\dist"
+set "PUBLIC_URL=https://pics.meulavoro.com.br:8443"
 
-REM Usar caminho padrão em home do Linux (WSL)
-set "WSLPATH=~/src/pics"
+if not exist "%ROOT%start-backend.bat" goto err_backend
+if not exist "%CADDY_EXE%" goto err_caddy
+if not exist "%CADDYFILE%" goto err_caddyfile
+if not exist "%FRONTEND_DIST%\index.html" goto build_front
+goto run_all
 
-echo [INFO] Usando caminho: %WSLPATH%
-echo.
+:build_front
+echo [AVISO] Build do frontend nao encontrado. Gerando com npm run build...
+pushd "%ROOT%frontend"
+call npm run build
+popd
+if not exist "%FRONTEND_DIST%\index.html" goto err_build
+goto run_all
 
-REM Verificar se o diretorio existe no WSL
-wsl test -d "!WSLPATH!" 2>nul
-if errorlevel 1 (
-    echo [AVISO] Diretorio nao encontrado em !WSLPATH!
-    echo.
-    echo Digite o caminho completo no WSL (ex: ~/Documents/pics ou /home/usuario/pics):
-    set /p WSLPATH="Caminho: "
-)
+:run_all
+echo [INFO] Abrindo backend em uma nova janela...
+start "PICS Backend" cmd /k call "%ROOT%start-backend.bat"
 
-REM Verificar se start.sh existe
-wsl test -f "!WSLPATH!/start.sh" 2>nul
-if errorlevel 1 (
-    echo [ERRO] start.sh nao encontrado em !WSLPATH!
-    echo.
-    echo Verifique:
-    echo   - O diretorio PICS existe no WSL
-    echo   - O arquivo start.sh existe
-    echo   - O caminho esta correto
-    echo.
-    pause
-    exit /b 1
-)
+echo [INFO] Aguardando backend ficar pronto...
+set "BACKEND_URL=http://127.0.0.1:8000/api/health"
+set /A BACKEND_TRIES=0
+set /A BACKEND_MAX_TRIES=30
 
-echo [OK] Arquivos encontrados
-echo.
-echo [INFO] Iniciando backend em localhost:8000
-echo [INFO] Iniciando frontend em localhost:5173
-echo.
-echo Pressione Ctrl+C para encerrar ambos os servicos
-echo.
+:wait_backend
+powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '%BACKEND_URL%' -UseBasicParsing -TimeoutSec 3 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+if %ERRORLEVEL% EQU 0 goto backend_ok
+if %BACKEND_TRIES% GEQ %BACKEND_MAX_TRIES% goto err_timeout
+set /A BACKEND_TRIES+=1
+timeout /t 2 /nobreak >nul
+goto wait_backend
 
-REM Executar start.sh no WSL
-wsl bash -c "cd '!WSLPATH!' && chmod +x start.sh && sed -i 's/\r$//' start.sh && exec ./start.sh"
-
-if errorlevel 1 (
-    if errorlevel 130 (
-        echo.
-        echo [OK] Servicos interrompidos pelo usuario ^(Ctrl+C^)
-    ) else (
-        echo.
-        echo [ERRO] Falha ao iniciar os servicos
-        echo.
-        echo Verifique:
-        echo   - WSL2 rodando corretamente
-        echo   - conda ativado no WSL
-        echo   - Node.js instalado no WSL
-        echo   - Nenhuma outra instancia de PICS rodando ^(porta 8000 e 5173 livres^)
-        echo.
-    )
-) else (
-    echo.
-    echo [OK] Servicos encerrados normalmente
-)
+:backend_ok
+echo [INFO] Backend disponivel.
+echo [INFO] Abrindo Caddy em uma nova janela...
+start "PICS Caddy" "%CADDY_EXE%" run --config "%CADDYFILE%"
 
 echo.
+echo [OK] Backend e Caddy iniciados.
+echo      Acesso local:    https://localhost:8443
+echo      Acesso externo:  %PUBLIC_URL%
+echo.
+echo Pressione qualquer tecla para fechar esta janela de controle.
+pause >nul
+goto :eof
+
+:err_backend
+echo [ERRO] start-backend.bat nao encontrado em %ROOT%
 pause
+goto :eof
+
+:err_caddy
+echo [ERRO] Caddy nao encontrado em %CADDY_EXE%
+echo        Baixe em https://caddyserver.com/download e salve como %CADDY_EXE%
+pause
+goto :eof
+
+:err_caddyfile
+echo [ERRO] Caddyfile nao encontrado em %CADDYFILE%
+pause
+goto :eof
+
+:err_build
+echo [ERRO] Falha ao gerar o build do frontend.
+pause
+goto :eof
+
+:err_timeout
+echo [ERRO] Timeout aguardando backend em %BACKEND_URL%.
+echo        Verifique se o backend iniciou corretamente e tente novamente.
+pause
+goto :eof
