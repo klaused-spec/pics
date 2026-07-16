@@ -705,20 +705,19 @@ export default function App() {
       let nextSyncToken = activeSyncToken
       const itemMap = new Map(seedItems.map((item) => [item.id, item]))
 
-      // Ordena por data de exibição (mais recente primeiro). O(n log n): só ao final.
+      // Ordena e persiste o acumulado. Operações O(n): chamar só ocasionalmente
+      // (throttle) durante o loop e uma vez definitiva ao final. Isso evita que
+      // cada página fique progressivamente mais lenta com dezenas de milhares de itens.
       const buildSorted = () => Array.from(itemMap.values()).sort((left, right) => {
         return (right.date_taken || '').localeCompare(left.date_taken || '')
       })
-
-      // Salvamento parcial de segurança: grava o cache SEM ordenar e SEM
-      // re-renderizar a lista inteira, para não congelar a thread JS. Roda com
-      // baixa frequência (por nº de páginas), só para não perder progresso em
-      // syncs muito longos. A ordenação/render definitiva acontece uma vez no fim.
-      const SAVE_EVERY_PAGES = 20
-      const savePartialSafe = async () => {
-        try {
-          await persistItemCache(Array.from(itemMap.values()))
-        } catch (_) {}
+      let lastFlush = Date.now()
+      const FLUSH_INTERVAL_MS = 4000
+      const flushProgress = async () => {
+        const partial = buildSorted()
+        setItems(partial)
+        await persistItemCache(partial)
+        lastFlush = Date.now()
       }
 
       while (true) {
@@ -744,19 +743,18 @@ export default function App() {
 
         nextSyncToken = data.sync_token
 
-        // Salvamento parcial leve (sem sort, sem setItems) a cada N páginas.
-        if (page % SAVE_EVERY_PAGES === 0) {
-          await savePartialSafe()
+        // Salva progresso periodicamente (não a cada página) para não perder o
+        // já baixado, sem pagar o custo de reordenar/regravar a lista inteira toda página.
+        if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
+          await flushProgress()
         }
 
         if (!data.has_more) break
         page += 1
       }
 
-      // Uma única ordenação + render + gravação definitiva ao final.
-      const finalItems = buildSorted()
-      setItems(finalItems)
-      await persistItemCache(finalItems)
+      // Flush definitivo com a lista completa e ordenada.
+      await flushProgress()
 
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
