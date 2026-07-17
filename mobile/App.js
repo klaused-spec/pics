@@ -90,14 +90,27 @@ async function ensureDirectories() {
 
 async function persistItemCache(nextItems) {
   // Sem limite: grava a lista inteira em arquivo (suporta 100k+ itens).
+  // Proteção: nunca sobrescreve um cache não-vazio com uma lista vazia
+  // (evita "perder tudo" se um sync incremental/interrompido produzir lista vazia).
   try {
+    if ((!nextItems || nextItems.length === 0)) {
+      if (await fileExists(ITEMS_FILE)) {
+        const raw = await FileSystem.readAsStringAsync(ITEMS_FILE).catch(() => null)
+        if (raw) {
+          const existing = JSON.parse(raw)
+          if (Array.isArray(existing) && existing.length > 0) {
+            return existing.length
+          }
+        }
+      }
+    }
     await FileSystem.writeAsStringAsync(ITEMS_FILE, JSON.stringify(nextItems))
     // Remove o cache antigo baseado em AsyncStorage, se existir.
     await AsyncStorage.removeItem(ITEMS_KEY).catch(() => {})
   } catch (_) {
     return 0
   }
-  return nextItems.length
+  return nextItems ? nextItems.length : 0
 }
 
 async function loadItemCache() {
@@ -353,6 +366,9 @@ export default function App() {
   const [password, setPassword] = useState('')
   const [token, setToken] = useState('')
   const [items, setItems] = useState([])
+  // Espelho de `items` sempre atualizado, para evitar closures obsoletas
+  // (ex.: sync ao retomar do background usava o `items` inicial vazio e zerava tudo).
+  const itemsRef = useRef([])
   const [syncToken, setSyncToken] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncStatus, setSyncStatus] = useState('')
@@ -398,6 +414,11 @@ export default function App() {
   const [slidePreparing, setSlidePreparing] = useState('')
   const slideOpacity = useRef(new Animated.Value(1)).current
   const slideTimerRef = useRef(null)
+
+  // Mantém o espelho de items sempre atualizado.
+  useEffect(() => {
+    itemsRef.current = items
+  }, [items])
 
   useEffect(() => {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {})
@@ -690,7 +711,7 @@ export default function App() {
     throw lastError
   }
 
-  async function syncLibrary(activeToken = token, activeBaseUrl = baseUrl, activeSyncToken = syncToken, seedItems = items) {
+  async function syncLibrary(activeToken = token, activeBaseUrl = baseUrl, activeSyncToken = syncToken, seedItems = null) {
     if (!activeToken) return
     if (syncingRef.current) return
     syncingRef.current = true
@@ -700,10 +721,23 @@ export default function App() {
     setSyncStatus('Sincronizando lista...')
     try {
       await ensureDirectories()
+
+      // Semeia SEMPRE a partir da lista mais recente disponível, nunca de uma
+      // closure obsoleta. Ordem de preferência: seed explícito não-vazio ->
+      // espelho itemsRef -> cache em disco. Assim, um sync incremental (com
+      // `since`) nunca "perde tudo" ao retomar do background/reabrir o app.
+      let baseSeed = Array.isArray(seedItems) && seedItems.length ? seedItems : null
+      if (!baseSeed && itemsRef.current && itemsRef.current.length) baseSeed = itemsRef.current
+      if (!baseSeed) {
+        const fromDisk = await loadItemCache()
+        if (Array.isArray(fromDisk) && fromDisk.length) baseSeed = fromDisk
+      }
+      if (!baseSeed) baseSeed = []
+
       let page = 1
       const requestedSince = activeSyncToken
       let nextSyncToken = activeSyncToken
-      const itemMap = new Map(seedItems.map((item) => [item.id, item]))
+      const itemMap = new Map(baseSeed.map((item) => [item.id, item]))
 
       // Ordena e persiste o acumulado. Operações O(n): chamar só ocasionalmente
       // (throttle) durante o loop e uma vez definitiva ao final. Isso evita que
