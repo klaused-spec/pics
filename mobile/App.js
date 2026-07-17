@@ -758,6 +758,51 @@ export default function App() {
 
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
+
+      // Baixa TODAS as thumbnails para o disco para navegação offline.
+      // Só baixa o que ainda não existe localmente (idempotente/retomável).
+      // Concorrência limitada para não estourar memória nem a rede.
+      const allItems = Array.from(itemMap.values())
+      const pending = []
+      for (const item of allItems) {
+        if (!item.local_thumbnail_uri && !item.thumbnail_failed) pending.push(item)
+      }
+      if (pending.length) {
+        const THUMB_CONCURRENCY = 8
+        let done = 0
+        let index = 0
+        setSyncStatus(`Thumbs: 0/${pending.length}`)
+        const worker = async () => {
+          while (index < pending.length) {
+            if (AppState.currentState !== 'active') {
+              const interrupted = new Error('background')
+              interrupted.code = 'BACKGROUND'
+              throw interrupted
+            }
+            const item = pending[index]
+            index += 1
+            const localUri = await downloadThumb(item, activeToken, activeBaseUrl)
+            const current = itemMap.get(item.id)
+            if (current) {
+              if (localUri) {
+                itemMap.set(item.id, { ...current, local_thumbnail_uri: localUri, thumbnail_failed: false })
+              } else {
+                itemMap.set(item.id, { ...current, thumbnail_failed: true })
+              }
+            }
+            done += 1
+            if (done % 25 === 0 || done === pending.length) {
+              setSyncStatus(`Thumbs: ${done}/${pending.length}`)
+              if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
+                await flushProgress()
+              }
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(THUMB_CONCURRENCY, pending.length) }, () => worker()))
+        await flushProgress()
+      }
+
       const finalCount = itemMap.size
       setSyncStatus(`Lista pronta: ${finalCount} itens`)
       loadAlbums(activeToken, activeBaseUrl)
@@ -773,6 +818,26 @@ export default function App() {
     } finally {
       syncingRef.current = false
       setSyncing(false)
+    }
+  }
+
+  // Baixa a thumbnail do item para o disco (thumbs/{id}.jpg) e devolve o URI local.
+  // Se o arquivo já existe, reusa. Retorna null em caso de falha.
+  async function downloadThumb(item, activeToken = token, activeBaseUrl = baseUrl) {
+    const localThumb = thumbPath(item)
+    try {
+      const info = await FileSystem.getInfoAsync(localThumb)
+      if (info.exists && info.size > 0) return localThumb
+    } catch (_) {}
+    const remoteUrl = item.thumbnail_url || apiUrl(activeBaseUrl, `/media/${item.id}/thumbnail?size=300`)
+    try {
+      const result = await FileSystem.downloadAsync(remoteUrl, localThumb, { headers: authHeaders(activeToken) })
+      if (result.status >= 200 && result.status < 300) return localThumb
+      await FileSystem.deleteAsync(localThumb, { idempotent: true }).catch(() => {})
+      return null
+    } catch (_) {
+      await FileSystem.deleteAsync(localThumb, { idempotent: true }).catch(() => {})
+      return null
     }
   }
 
@@ -838,6 +903,15 @@ export default function App() {
       await FileSystem.deleteAsync(THUMB_DIR, { idempotent: true }).catch(() => {})
       await ensureDirectories()
       setCachedFullIds(new Set())
+      // Limpa as referências às thumbnails locais que acabaram de ser apagadas,
+      // para que o próximo sync as baixe de novo (downloadThumb é idempotente).
+      setItems((currentItems) => {
+        const nextItems = currentItems.map((item) => (
+          item.local_thumbnail_uri ? { ...item, local_thumbnail_uri: null } : item
+        ))
+        persistItemCache(nextItems).catch(() => {})
+        return nextItems
+      })
       setSyncStatus('Fotos offline removidas da pasta Pics')
     } catch (error) {
       Alert.alert('Limpar offline', error.message)
