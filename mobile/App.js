@@ -826,7 +826,11 @@ export default function App() {
         if (!item.local_thumbnail_uri && !item.thumbnail_failed) pending.push(item)
       }
       if (pending.length) {
-        const THUMB_CONCURRENCY = 8
+        // Concorrência alta: as thumbnails já existem no cache do servidor
+        // (.thumbnails/images), então cada request é só I/O de arquivo — o
+        // gargalo é latência de rede por conexão, não CPU. Mais conexões em
+        // paralelo aumentam bastante o throughput (antes: 8 -> ~100/min).
+        const THUMB_CONCURRENCY = 24
         let done = 0
         let index = 0
         setSyncStatus(`Thumbs: 0/${pending.length}`)
@@ -887,16 +891,23 @@ export default function App() {
       const info = await FileSystem.getInfoAsync(localThumb)
       if (info.exists && info.size > 0) return localThumb
     } catch (_) {}
-    const remoteUrl = item.thumbnail_url || apiUrl(activeBaseUrl, `/media/${item.id}/thumbnail?size=300`)
-    try {
-      const result = await FileSystem.downloadAsync(remoteUrl, localThumb, { headers: authHeaders(activeToken) })
-      if (result.status >= 200 && result.status < 300) return localThumb
-      await FileSystem.deleteAsync(localThumb, { idempotent: true }).catch(() => {})
-      return null
-    } catch (_) {
-      await FileSystem.deleteAsync(localThumb, { idempotent: true }).catch(() => {})
-      return null
+    // Tenta primeiro o endpoint "cached": serve direto do disco no servidor, sem
+    // tocar o banco (evita o lock do SQLite que serializa os downloads e derruba
+    // a velocidade para ~100/min). Como o web já gerou as thumbnails, o cache do
+    // servidor está quente e o 404 é raro. Fallback: /thumbnail (regenera).
+    const cachedUrl = apiUrl(activeBaseUrl, `/media/${item.id}/thumbnail-cached?size=300`)
+    const fallbackUrl = item.thumbnail_url || apiUrl(activeBaseUrl, `/media/${item.id}/thumbnail?size=300`)
+    for (const remoteUrl of [cachedUrl, fallbackUrl]) {
+      try {
+        const result = await FileSystem.downloadAsync(remoteUrl, localThumb, { headers: authHeaders(activeToken) })
+        if (result.status >= 200 && result.status < 300) return localThumb
+        await FileSystem.deleteAsync(localThumb, { idempotent: true }).catch(() => {})
+        // 404 no cached -> tenta o fallback; outros erros também caem no fallback.
+      } catch (_) {
+        await FileSystem.deleteAsync(localThumb, { idempotent: true }).catch(() => {})
+      }
     }
+    return null
   }
 
   function markThumbnailFailed(id) {

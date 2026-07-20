@@ -617,6 +617,29 @@ def get_sync_manifest(
     }
 
 
+@router.get("/{media_id}/thumbnail-cached")
+def get_thumbnail_cached(media_id: int, size: int = Query(300, ge=50, le=800)):
+    """Serve a thumbnail DIRETO do cache em disco, sem tocar o banco.
+
+    Diferente de /thumbnail (que faz query no SQLite + valida mtime, e por isso
+    serializa/trava sob concorrência quando o worker de AI/faces está gravando),
+    este endpoint só lê o arquivo já cacheado (.thumbnails/images/{id}_{size}.jpg).
+    Ideal para o sync em massa do app: sem lock de banco, alta concorrência.
+
+    Se o cache não existir, retorna 404 — o app cai no fluxo /thumbnail normal
+    (que regenera) como fallback.
+    """
+    cache_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
+    cache_path = os.path.join(cache_dir, f"{media_id}_{size}.jpg")
+    if not os.path.exists(cache_path):
+        raise HTTPException(status_code=404, detail="Thumbnail não está em cache")
+    return FileResponse(
+        cache_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000"},
+    )
+
+
 @router.post("/thumbnails/warmup")
 def warmup_thumbnail_cache(
     page: int = Query(1, ge=1),
