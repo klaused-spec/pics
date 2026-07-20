@@ -13,14 +13,24 @@
 }
 
 pics.meulavoro.com.br:8443 {
-	encode gzip zstd
-
 	# Certificado gerado pelo certbot (ver issue-cert.ps1)
 	tls C:\caddy\certs\fullchain.pem C:\caddy\certs\privkey.pem
 
+	# Compressão só para o conteúdo NÃO-API (frontend estático). Respostas
+	# grandes de JSON da API (manifesto de sync) comprimidas em streaming sobre
+	# HTTP/2 abortavam em rede móvel ("http2: stream closed") e travavam o sync.
+	@notapi {
+		not path /api/*
+	}
+	encode @notapi gzip zstd
+
 	# API -> backend uvicorn (mantém o /api no caminho encaminhado)
+	# flush_interval -1 desliga o buffering: envia os bytes assim que chegam do
+	# backend, evitando que a resposta fique presa em buffer sob HTTP/2.
 	handle /api/* {
-		reverse_proxy 127.0.0.1:8000
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
 	}
 
 	# Frontend (SPA) -> build de produção do Vite

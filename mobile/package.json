@@ -15,6 +15,7 @@
     "expo-file-system": "^18.1.11",
     "expo-media-library": "~17.1.7",
     "expo-status-bar": "^2.2.3",
+    "fflate": "^0.8.3",
     "react": "19.0.0",
     "react-native": "0.79.6"
   },

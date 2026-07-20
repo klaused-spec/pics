@@ -632,11 +632,81 @@ def get_thumbnail_cached(media_id: int, size: int = Query(300, ge=50, le=800)):
     cache_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
     cache_path = os.path.join(cache_dir, f"{media_id}_{size}.jpg")
     if not os.path.exists(cache_path):
+        # Fallback: cache do organizer usa {id}_{nome_original}.jpg — procura por prefixo.
+        import glob
+        matches = glob.glob(os.path.join(cache_dir, f"{media_id}_*.jpg"))
+        cache_path = matches[0] if matches else None
+    if not cache_path or not os.path.exists(cache_path):
         raise HTTPException(status_code=404, detail="Thumbnail não está em cache")
     return FileResponse(
         cache_path,
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=31536000"},
+    )
+
+
+class ThumbnailZipRequest(BaseModel):
+    ids: list[int]
+
+
+@router.post("/thumbnails/zip")
+def download_thumbnails_zip(
+    payload: ThumbnailZipRequest,
+    size: int = Query(300, ge=50, le=800),
+    current_user: dict = Depends(get_current_user),
+):
+    """Empacota um LOTE de thumbnails já cacheadas num único ZIP.
+
+    Em vez de o app fazer um request por imagem (110k round-trips, que o Caddy
+    corta em HTTP/2), ele pede lotes de ids e recebe um ZIP só. Não regenera nem
+    toca o banco. Cada entrada é "{id}.jpg". IDs sem cache são omitidos.
+    """
+    import io
+    import zipfile
+
+    ids = payload.ids or []
+    if len(ids) > 2000:
+        raise HTTPException(status_code=400, detail="Máximo de 2000 ids por lote")
+
+    cache_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
+
+    # No cache convivem dois padrões de nome:
+    #   {id}_{size}.jpg           (gerado por GET /thumbnail)
+    #   {id}_{nome_original}.jpg  (gerado pelo organizer / web)
+    # Construímos um índice id -> caminho listando o diretório UMA vez por lote
+    # (barato) e mapeando pelo prefixo "{id}_". Preferimos o "_{size}.jpg".
+    id_set = set(str(i) for i in ids)
+    index = {}
+    try:
+        with os.scandir(cache_dir) as it:
+            for entry in it:
+                name = entry.name
+                if not name.endswith(".jpg"):
+                    continue
+                prefix = name.split("_", 1)[0]
+                if prefix not in id_set:
+                    continue
+                # Prioriza o arquivo "{id}_{size}.jpg" se existir.
+                if prefix not in index or name == f"{prefix}_{size}.jpg":
+                    index[prefix] = entry.path
+    except FileNotFoundError:
+        index = {}
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as zf:
+        for media_id in ids:
+            cache_path = index.get(str(media_id))
+            if cache_path and os.path.exists(cache_path):
+                try:
+                    zf.write(cache_path, arcname=f"{media_id}.jpg")
+                except Exception:
+                    pass
+    data = buffer.getvalue()
+
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Cache-Control": "no-store"},
     )
 
 

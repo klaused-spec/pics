@@ -3,6 +3,7 @@ import { Audio, ResizeMode, Video } from 'expo-av'
 import * as FileSystem from 'expo-file-system'
 import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
+import { unzipSync } from 'fflate'
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
@@ -86,6 +87,25 @@ function formatDuration(seconds) {
 async function ensureDirectories() {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true })
   await FileSystem.makeDirectoryAsync(FULL_DIR, { intermediates: true })
+}
+
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+// Converte um Uint8Array em string base64 (para gravar com EncodingType.Base64).
+// Implementação própria: React Native não tem btoa confiável para binário.
+function fromByteArrayBase64(bytes) {
+  let result = ''
+  const len = bytes.length
+  for (let i = 0; i < len; i += 3) {
+    const b0 = bytes[i]
+    const b1 = i + 1 < len ? bytes[i + 1] : 0
+    const b2 = i + 2 < len ? bytes[i + 2] : 0
+    result += B64_CHARS[b0 >> 2]
+    result += B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)]
+    result += i + 1 < len ? B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : '='
+    result += i + 2 < len ? B64_CHARS[b2 & 63] : '='
+  }
+  return result
 }
 
 async function persistItemCache(nextItems) {
@@ -690,13 +710,20 @@ export default function App() {
   }
 
   // Busca uma página do manifesto com algumas tentativas (resiliente a falhas de rede).
-  async function fetchManifestPage(url, activeToken, attempts = 3) {
+  async function fetchManifestPage(url, activeToken, attempts = 4) {
     let lastError
     for (let tryIndex = 0; tryIndex < attempts; tryIndex += 1) {
       try {
         const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) }, 20000)
         if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)
-        return await response.json()
+        // Timeout TAMBÉM na leitura do corpo: se o stream HTTP/2 travar no meio
+        // (dados param mas a conexão não fecha), o response.json() ficaria
+        // pendurado para sempre e o sync travava numa página. Aqui forçamos um
+        // erro após 25s para acionar o retry desta página.
+        const bodyTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout lendo manifesto')), 25000)
+        )
+        return await Promise.race([response.json(), bodyTimeout])
       } catch (error) {
         lastError = error
         // Se o app foi para background no meio, não insiste: sinaliza para retomar depois.
@@ -766,7 +793,11 @@ export default function App() {
         const cursorParam = (afterUpdatedAt != null && afterId != null)
           ? `&after_updated_at=${encodeURIComponent(afterUpdatedAt)}&after_id=${encodeURIComponent(afterId)}`
           : ''
-        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=1000&size=300${sinceParam}${cursorParam}`)
+        // per_page=500 (era 1000): respostas menores reduzem a chance do stream
+        // HTTP/2 do Caddy abortar ("http2: stream closed") em rede movel, que
+        // deixava o fetch pendurado e travava o sync numa pagina. Com keyset,
+        // cada pagina e rapida, entao o dobro de paginas nao pesa.
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=500&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
         const totalPages = Math.max(data.pages, 1)
         const totalItems = data.total || 0
@@ -826,42 +857,37 @@ export default function App() {
         if (!item.local_thumbnail_uri && !item.thumbnail_failed) pending.push(item)
       }
       if (pending.length) {
-        // Concorrência alta: as thumbnails já existem no cache do servidor
-        // (.thumbnails/images), então cada request é só I/O de arquivo — o
-        // gargalo é latência de rede por conexão, não CPU. Mais conexões em
-        // paralelo aumentam bastante o throughput (antes: 8 -> ~100/min).
-        const THUMB_CONCURRENCY = 24
+        // Baixa as thumbnails em LOTES compactados (.zip), não uma a uma.
+        // Um request por imagem (110k) era cortado pelo Caddy/HTTP2 e travava.
+        // Agora: pede lotes de ids -> recebe 1 zip -> descompacta -> grava.
+        // Poucos requests, robusto e rápido.
+        const BATCH = 500
         let done = 0
-        let index = 0
         setSyncStatus(`Thumbs: 0/${pending.length}`)
-        const worker = async () => {
-          while (index < pending.length) {
-            if (AppState.currentState !== 'active') {
-              const interrupted = new Error('background')
-              interrupted.code = 'BACKGROUND'
-              throw interrupted
-            }
-            const item = pending[index]
-            index += 1
-            const localUri = await downloadThumb(item, activeToken, activeBaseUrl)
+        for (let start = 0; start < pending.length; start += BATCH) {
+          if (AppState.currentState !== 'active') {
+            const interrupted = new Error('background')
+            interrupted.code = 'BACKGROUND'
+            throw interrupted
+          }
+          const batch = pending.slice(start, start + BATCH)
+          const ids = batch.map((it) => it.id)
+          const saved = await downloadThumbBatch(ids, activeToken, activeBaseUrl)
+          for (const item of batch) {
             const current = itemMap.get(item.id)
-            if (current) {
-              if (localUri) {
-                itemMap.set(item.id, { ...current, local_thumbnail_uri: localUri, thumbnail_failed: false })
-              } else {
-                itemMap.set(item.id, { ...current, thumbnail_failed: true })
-              }
+            if (!current) continue
+            if (saved.has(item.id)) {
+              itemMap.set(item.id, { ...current, local_thumbnail_uri: thumbPath(item), thumbnail_failed: false })
             }
-            done += 1
-            if (done % 25 === 0 || done === pending.length) {
-              setSyncStatus(`Thumbs: ${done}/${pending.length}`)
-              if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
-                await flushProgress()
-              }
-            }
+            // Se não veio no zip (sem cache no servidor), deixa pendente para
+            // a próxima passada — não marca como failed permanente.
+          }
+          done += batch.length
+          setSyncStatus(`Thumbs: ${Math.min(done, pending.length)}/${pending.length}`)
+          if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
+            await flushProgress()
           }
         }
-        await Promise.all(Array.from({ length: Math.min(THUMB_CONCURRENCY, pending.length) }, () => worker()))
         await flushProgress()
       }
 
@@ -908,6 +934,64 @@ export default function App() {
       }
     }
     return null
+  }
+
+  // Baixa um LOTE de thumbnails num único zip, descompacta e grava em thumbs/.
+  // Retorna um Set com os ids que foram efetivamente salvos.
+  async function downloadThumbBatch(ids, activeToken = token, activeBaseUrl = baseUrl) {
+    const saved = new Set()
+    if (!ids.length) return saved
+
+    // Só pede ao servidor os que ainda não estão no disco (retomável/idempotente).
+    const missing = []
+    for (const id of ids) {
+      const p = `${THUMB_DIR}${id}.jpg`
+      try {
+        const info = await FileSystem.getInfoAsync(p)
+        if (info.exists && info.size > 0) { saved.add(id); continue }
+      } catch (_) {}
+      missing.push(id)
+    }
+    if (!missing.length) return saved
+
+    const url = apiUrl(activeBaseUrl, `/media/thumbnails/zip?size=300`)
+    let bytes
+    try {
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { ...authHeaders(activeToken), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: missing }),
+        },
+        60000,
+      )
+      if (!response.ok) return saved
+      const buffer = await response.arrayBuffer()
+      bytes = new Uint8Array(buffer)
+    } catch (_) {
+      return saved
+    }
+
+    let entries
+    try {
+      entries = unzipSync(bytes)
+    } catch (_) {
+      return saved
+    }
+
+    for (const name of Object.keys(entries)) {
+      const id = parseInt(name.replace(/\.jpg$/i, ''), 10)
+      if (!Number.isFinite(id)) continue
+      try {
+        const b64 = fromByteArrayBase64(entries[name])
+        await FileSystem.writeAsStringAsync(`${THUMB_DIR}${id}.jpg`, b64, {
+          encoding: FileSystem.EncodingType.Base64,
+        })
+        saved.add(id)
+      } catch (_) {}
+    }
+    return saved
   }
 
   function markThumbnailFailed(id) {
@@ -973,7 +1057,7 @@ export default function App() {
       await ensureDirectories()
       setCachedFullIds(new Set())
       // Limpa as referências às thumbnails locais que acabaram de ser apagadas,
-      // para que o próximo sync as baixe de novo (downloadThumb é idempotente).
+      // para que o próximo sync as baixe de novo (o download em lote é idempotente).
       setItems((currentItems) => {
         const nextItems = currentItems.map((item) => (
           item.local_thumbnail_uri ? { ...item, local_thumbnail_uri: null } : item
