@@ -754,18 +754,32 @@ export default function App() {
         lastFlush = Date.now()
       }
 
+      // Paginação por keyset (seek method): em vez de OFFSET (que fica cada vez
+      // mais lento — pág 66 tem que percorrer 65k linhas), pedimos ao servidor
+      // apenas os itens DEPOIS do último recebido. Cada página é O(per_page),
+      // sempre rápida. Cursor = (updated_at, id) do último item da página.
+      let afterUpdatedAt = null
+      let afterId = null
+
       while (true) {
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
-        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=1000&size=300${sinceParam}`)
+        const cursorParam = (afterUpdatedAt != null && afterId != null)
+          ? `&after_updated_at=${encodeURIComponent(afterUpdatedAt)}&after_id=${encodeURIComponent(afterId)}`
+          : ''
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=1000&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
         const totalPages = Math.max(data.pages, 1)
         const totalItems = data.total || 0
-        const processedBeforePage = (page - 1) * data.per_page
-        setSyncStatus(`Lista: pagina ${page}/${totalPages} (${Math.min(processedBeforePage + data.items.length, totalItems)}/${totalItems} itens)`)
+        setSyncStatus(`Lista: pagina ${page}/${totalPages} (${Math.min(itemMap.size, totalItems)}/${totalItems} itens)`)
 
         for (const item of data.items) {
           const previous = itemMap.get(item.id)
-          const thumbChanged = previous?.updated_at && previous.updated_at !== item.updated_at
+          // Só invalida a thumbnail quando o ARQUIVO muda (sha256), não quando
+          // o servidor apenas reprocessa AI/faces (que altera updated_at sem
+          // mudar a imagem). Isso evita apagar/rebaixar thumbnails à toa e o
+          // efeito de "re-sincroniza tudo" toda vez que o app reabre.
+          const prevHash = previous?.sha256_hash
+          const thumbChanged = prevHash != null && item.sha256_hash != null && prevHash !== item.sha256_hash
           if (thumbChanged) {
             const localThumb = thumbPath(item)
             await FileSystem.deleteAsync(localThumb, { idempotent: true })
@@ -776,6 +790,16 @@ export default function App() {
         }
 
         nextSyncToken = data.sync_token
+
+        // Avança o cursor keyset a partir do próprio servidor (fallback: último item).
+        if (data.next_cursor && data.next_cursor.after_id != null) {
+          afterUpdatedAt = data.next_cursor.after_updated_at
+          afterId = data.next_cursor.after_id
+        } else if (data.items.length) {
+          const lastItem = data.items[data.items.length - 1]
+          afterUpdatedAt = lastItem.updated_at || afterUpdatedAt
+          afterId = lastItem.id
+        }
 
         // Salva progresso periodicamente (não a cada página) para não perder o
         // já baixado, sem pagar o custo de reordenar/regravar a lista inteira toda página.

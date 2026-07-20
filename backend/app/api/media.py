@@ -550,24 +550,58 @@ def get_sync_manifest(
     page: int = Query(1, ge=1),
     per_page: int = Query(200, ge=1, le=1000),
     size: int = Query(300, ge=50, le=800),
+    after_updated_at: Optional[datetime.datetime] = None,
+    after_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    """Retorna manifesto incremental para clientes offline sincronizarem thumbnails."""
-    query = db.query(Media).filter(Media.is_duplicate == False, Media.is_organized == True)
-    if since:
-        query = query.filter(Media.updated_at > since)
+    """Retorna manifesto incremental para clientes offline sincronizarem thumbnails.
 
-    total = query.count()
-    media_items = (
-        query.order_by(Media.updated_at.asc(), Media.id.asc())
-        .offset((page - 1) * per_page)
-        .limit(per_page)
-        .all()
-    )
+    Suporta paginação por keyset (seek method): o cliente envia o cursor do
+    último item recebido (`after_updated_at` + `after_id`) e o servidor devolve
+    apenas os itens seguintes. Isso mantém cada página O(per_page) usando o
+    índice composto (is_duplicate, is_organized, updated_at, id), evitando a
+    degradação progressiva do OFFSET (páginas cada vez mais lentas).
+
+    O parâmetro `page` é mantido apenas para compatibilidade/telemetria e não é
+    usado para saltar linhas quando o cursor keyset está presente.
+    """
+    base_query = db.query(Media).filter(Media.is_duplicate == False, Media.is_organized == True)
+    if since:
+        base_query = base_query.filter(Media.updated_at > since)
+
+    total = base_query.count()
+
+    query = base_query
+    use_keyset = after_updated_at is not None and after_id is not None
+    if use_keyset:
+        # (updated_at, id) > (after_updated_at, after_id) — comparação lexicográfica.
+        query = query.filter(
+            or_(
+                Media.updated_at > after_updated_at,
+                and_(Media.updated_at == after_updated_at, Media.id > after_id),
+            )
+        )
+
+    ordered = query.order_by(Media.updated_at.asc(), Media.id.asc())
+    if use_keyset:
+        media_items = ordered.limit(per_page).all()
+    else:
+        # Primeira página (sem cursor) — offset é sempre 0 aqui.
+        media_items = ordered.offset((page - 1) * per_page).limit(per_page).all()
 
     base_url = str(request.base_url).rstrip("/")
     server_time = datetime.datetime.utcnow()
     items = [_media_sync_item(media, base_url, size) for media in media_items]
+
+    last = media_items[-1] if media_items else None
+    next_cursor = None
+    if last is not None:
+        next_cursor = {
+            "after_updated_at": (last.updated_at.isoformat() if last.updated_at else None),
+            "after_id": last.id,
+        }
+
+    has_more = len(media_items) == per_page and (page * per_page < total or use_keyset)
 
     return {
         "server_time": server_time.isoformat(),
@@ -576,7 +610,8 @@ def get_sync_manifest(
         "per_page": per_page,
         "total": total,
         "pages": (total + per_page - 1) // per_page,
-        "has_more": page * per_page < total,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
         "thumbnail_size": size,
         "items": items,
     }
