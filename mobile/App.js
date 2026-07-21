@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
 import * as FileSystem from 'expo-file-system'
+import { Image as ExpoImage } from 'expo-image'
 import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
 import { unzipSync } from 'fflate'
@@ -392,6 +393,10 @@ export default function App() {
   const [syncToken, setSyncToken] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncStatus, setSyncStatus] = useState('')
+  // Download offline opcional (manual) de TODAS as thumbnails para o disco.
+  const [offlineThumbs, setOfflineThumbs] = useState(false)
+  const [offlineStatus, setOfflineStatus] = useState('')
+  const offlineThumbsRef = useRef(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [mediaFilter, setMediaFilter] = useState('all')
   const [offlineOnly, setOfflineOnly] = useState(false)
@@ -745,7 +750,6 @@ export default function App() {
     syncInterruptedRef.current = false
     syncCtxRef.current = { token: activeToken, baseUrl: activeBaseUrl }
     setSyncing(true)
-    setSyncStatus('Sincronizando lista...')
     try {
       await ensureDirectories()
 
@@ -799,9 +803,12 @@ export default function App() {
         // cada pagina e rapida, entao o dobro de paginas nao pesa.
         const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=500&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
-        const totalPages = Math.max(data.pages, 1)
-        const totalItems = data.total || 0
-        setSyncStatus(`Lista: pagina ${page}/${totalPages} (${Math.min(itemMap.size, totalItems)}/${totalItems} itens)`)
+        // Status discreto SÓ na carga inicial (sem cache prévio). No incremental
+        // (poucas páginas) não mostra nada — o app fica com a galeria, não com telas.
+        if (baseSeed.length === 0) {
+          const totalItems = data.total || 0
+          setSyncStatus(`Carregando biblioteca… ${Math.min(itemMap.size, totalItems)}/${totalItems}`)
+        }
 
         for (const item of data.items) {
           const previous = itemMap.get(item.id)
@@ -848,60 +855,18 @@ export default function App() {
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
 
-      // Baixa TODAS as thumbnails para o disco para navegação offline.
-      // Só baixa o que ainda não existe localmente (idempotente/retomável).
-      // Concorrência limitada para não estourar memória nem a rede.
-      const allItems = Array.from(itemMap.values())
-      const pending = []
-      for (const item of allItems) {
-        if (!item.local_thumbnail_uri && !item.thumbnail_failed) pending.push(item)
-      }
-      if (pending.length) {
-        // Baixa as thumbnails em LOTES compactados (.zip), não uma a uma.
-        // Um request por imagem (110k) era cortado pelo Caddy/HTTP2 e travava.
-        // Agora: pede lotes de ids -> recebe 1 zip -> descompacta -> grava.
-        // Poucos requests, robusto e rápido.
-        const BATCH = 500
-        let done = 0
-        setSyncStatus(`Thumbs: 0/${pending.length}`)
-        for (let start = 0; start < pending.length; start += BATCH) {
-          if (AppState.currentState !== 'active') {
-            const interrupted = new Error('background')
-            interrupted.code = 'BACKGROUND'
-            throw interrupted
-          }
-          const batch = pending.slice(start, start + BATCH)
-          const ids = batch.map((it) => it.id)
-          const saved = await downloadThumbBatch(ids, activeToken, activeBaseUrl)
-          for (const item of batch) {
-            const current = itemMap.get(item.id)
-            if (!current) continue
-            if (saved.has(item.id)) {
-              itemMap.set(item.id, { ...current, local_thumbnail_uri: thumbPath(item), thumbnail_failed: false })
-            }
-            // Se não veio no zip (sem cache no servidor), deixa pendente para
-            // a próxima passada — não marca como failed permanente.
-          }
-          done += batch.length
-          setSyncStatus(`Thumbs: ${Math.min(done, pending.length)}/${pending.length}`)
-          if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
-            await flushProgress()
-          }
-        }
-        await flushProgress()
-      }
-
-      const finalCount = itemMap.size
-      setSyncStatus(`Lista pronta: ${finalCount} itens`)
+      // As thumbnails NÃO são mais pré-baixadas em massa: a galeria usa expo-image,
+      // que carrega cada thumb da URL sob demanda e a cacheia em disco (memory-disk)
+      // automaticamente ao rolar. Isso deixa o app instantâneo (mostra o cache
+      // local na hora) e o sync leve (só a lista). Para offline total opcional,
+      // usar a ação manual "Baixar thumbnails" em Configurações.
       loadAlbums(activeToken, activeBaseUrl)
     } catch (error) {
       if (error.code === 'BACKGROUND') {
         // Interrompido por ir para background: retoma ao voltar, sem alerta.
         syncInterruptedRef.current = true
-        setSyncStatus('Sync pausado (app em segundo plano) — retomará ao voltar')
       } else {
         syncInterruptedRef.current = true
-        setSyncStatus('Sync interrompido — toque para tentar de novo')
       }
     } finally {
       syncingRef.current = false
@@ -934,6 +899,29 @@ export default function App() {
       }
     }
     return null
+  }
+
+  // Consulta ao servidor QUAIS ids (dentre os enviados) já têm thumb em cache.
+  // Retorna um array de ids, ou null se a consulta falhar.
+  async function fetchThumbsHave(ids, activeToken = token, activeBaseUrl = baseUrl) {
+    if (!ids.length) return []
+    const url = apiUrl(activeBaseUrl, `/media/thumbnails/have?size=300`)
+    try {
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { ...authHeaders(activeToken), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        },
+        20000,
+      )
+      if (!response.ok) return null
+      const data = await response.json()
+      return Array.isArray(data.have) ? data.have : []
+    } catch (_) {
+      return null
+    }
   }
 
   // Baixa um LOTE de thumbnails num único zip, descompacta e grava em thumbs/.
@@ -992,6 +980,82 @@ export default function App() {
       } catch (_) {}
     }
     return saved
+  }
+
+  function cancelDownloadAllThumbs() {
+    offlineThumbsRef.current = false
+    setOfflineThumbs(false)
+    setOfflineStatus('Download offline cancelado')
+  }
+
+  // Ação MANUAL: baixa para o disco as thumbnails de toda a biblioteca (offline
+  // total). Diferente do sync (que só traz a lista), isto percorre os itens em
+  // lotes, pergunta ao servidor quais têm thumb em cache (/thumbnails/have) e
+  // baixa só esses via zip. Retomável e cancelável.
+  async function downloadAllThumbsOffline(activeToken = token, activeBaseUrl = baseUrl) {
+    if (offlineThumbsRef.current) return
+    if (!activeToken) return
+    await ensureDirectories()
+
+    const all = itemsRef.current || []
+    const candidates = all.filter((it) => !it.thumbnail_failed)
+    if (!candidates.length) {
+      setOfflineStatus('Nada para baixar')
+      return
+    }
+
+    offlineThumbsRef.current = true
+    setOfflineThumbs(true)
+    setOfflineStatus(`Preparando download offline…`)
+
+    try {
+      // 1) Descobre quais têm thumb em cache no servidor.
+      const HAVE_BATCH = 1000
+      const available = []
+      for (let start = 0; start < candidates.length; start += HAVE_BATCH) {
+        if (!offlineThumbsRef.current) return
+        const slice = candidates.slice(start, start + HAVE_BATCH)
+        const have = await fetchThumbsHave(slice.map((it) => it.id), activeToken, activeBaseUrl)
+        if (have && have.length) {
+          const haveSet = new Set(have)
+          for (const it of slice) if (haveSet.has(it.id)) available.push(it)
+        }
+        setOfflineStatus(`Verificando no servidor… ${Math.min(start + HAVE_BATCH, candidates.length)}/${candidates.length}`)
+      }
+
+      if (!available.length) {
+        setOfflineStatus('Nenhuma thumbnail disponível no servidor ainda')
+        return
+      }
+
+      // 2) Baixa em lotes as que ainda não estão no disco e marca o URI local
+      //    no item (para a galeria exibir do disco, sem rede).
+      const BATCH = 500
+      let done = 0
+      for (let start = 0; start < available.length; start += BATCH) {
+        if (!offlineThumbsRef.current) return
+        const batch = available.slice(start, start + BATCH)
+        const saved = await downloadThumbBatch(batch.map((it) => it.id), activeToken, activeBaseUrl)
+        if (saved.size) {
+          setItems((current) => {
+            const next = current.map((it) =>
+              saved.has(it.id) ? { ...it, local_thumbnail_uri: thumbPath(it), thumbnail_failed: false } : it
+            )
+            persistItemCache(next).catch(() => {})
+            return next
+          })
+        }
+        done += batch.length
+        setOfflineStatus(`Baixando offline… ${Math.min(done, available.length)}/${available.length}`)
+      }
+
+      setOfflineStatus(`Offline pronto: ${available.length} thumbnails`)
+    } catch (_) {
+      setOfflineStatus('Download offline interrompido — toque para tentar de novo')
+    } finally {
+      offlineThumbsRef.current = false
+      setOfflineThumbs(false)
+    }
   }
 
   function markThumbnailFailed(id) {
@@ -1291,6 +1355,14 @@ export default function App() {
     return treeSelected.folder != null ? `${base} · ${folderName(treeSelected.folder)}` : base
   }, [treeMonths, treeSelected])
 
+  // Source de thumbnail para o expo-image: se há arquivo local (offline), usa
+  // o file:// direto (sem headers/cacheKey). Senão, usa a URL remota com token
+  // e um cacheKey estável (imune à troca de token) — cacheada em disco.
+  function thumbSource(item) {
+    if (item.local_thumbnail_uri) return { uri: item.local_thumbnail_uri }
+    return { uri: item.thumbnail_url, headers: authHeaders(token), cacheKey: `thumb-${item.id}-300` }
+  }
+
   function renderTile(item) {
     const isSelected = selectedIds.has(item.id)
     const onPress = () => {
@@ -1307,7 +1379,15 @@ export default function App() {
             <Text style={styles.thumbMissingText}>SEM THUMB</Text>
           </View>
         ) : (
-          <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} onError={() => markThumbnailFailed(item.id)} />
+          <ExpoImage
+            source={thumbSource(item)}
+            style={styles.thumb}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={String(item.id)}
+            transition={100}
+            onError={() => markThumbnailFailed(item.id)}
+          />
         )}
         {cachedFullIds.has(item.id) && <Text style={styles.offlineBadge}>OFFLINE</Text>}
         {item.media_type === 'video' && (
@@ -1610,7 +1690,7 @@ export default function App() {
                 <Pressable style={styles.albumRow} onPress={() => setOpenAlbumId(album.id)} onLongPress={() => deleteAlbum(album.id)}>
                   <View style={styles.albumCover}>
                     {cover ? (
-                      <Image source={{ uri: cover.local_thumbnail_uri || cover.thumbnail_url, headers: authHeaders(token) }} style={{ width: '100%', height: '100%', borderRadius: 10 }} />
+                      <ExpoImage source={thumbSource(cover)} style={{ width: '100%', height: '100%', borderRadius: 10 }} contentFit="cover" cachePolicy="memory-disk" recyclingKey={String(cover.id)} />
                     ) : (
                       <Text style={styles.albumCoverText}>📁</Text>
                     )}
@@ -1663,7 +1743,7 @@ export default function App() {
                     {item.thumbnail_failed ? (
                       <View style={[styles.thumb, styles.thumbMissing]}><Text style={styles.thumbMissingText}>SEM THUMB</Text></View>
                     ) : (
-                      <Image source={{ uri: item.local_thumbnail_uri || item.thumbnail_url, headers: authHeaders(token) }} style={styles.thumb} />
+                      <ExpoImage source={thumbSource(item)} style={styles.thumb} contentFit="cover" cachePolicy="memory-disk" recyclingKey={String(item.id)} />
                     )}
                     {item.media_type === 'video' && (
                       <View style={styles.videoBadge}>
@@ -1781,11 +1861,17 @@ export default function App() {
                   <Text style={styles.rowItemHint}>↻</Text>
                 </Pressable>
                 <View style={styles.rowDivider} />
+                <Pressable style={styles.rowItem} onPress={() => offlineThumbsRef.current ? cancelDownloadAllThumbs() : downloadAllThumbsOffline()} disabled={syncing}>
+                  <Text style={styles.rowItemText}>{offlineThumbs ? 'Cancelar download offline' : 'Baixar tudo offline'}</Text>
+                  <Text style={styles.rowItemHint}>{offlineThumbs ? '✕' : '⬇'}</Text>
+                </Pressable>
+                <View style={styles.rowDivider} />
                 <Pressable style={styles.rowItem} onPress={confirmClearOfflineFiles}>
                   <Text style={[styles.rowItemText, styles.rowItemDanger]}>Limpar arquivos offline</Text>
                   <Text style={styles.rowItemHint}>🗑️</Text>
                 </Pressable>
               </View>
+              {!!offlineStatus && <Text style={styles.status}>{offlineStatus}</Text>}
               {!!syncStatus && <Text style={styles.status}>{syncStatus}</Text>}
 
               <Text style={styles.sectionLabel}>Slideshow</Text>
