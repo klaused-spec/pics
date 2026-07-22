@@ -1,11 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
 import * as DocumentPicker from 'expo-document-picker'
-import * as FileSystem from 'expo-file-system'
+// SDK 54: a API clássica (documentDirectory, readAsStringAsync, etc.) migrou
+// para o submódulo /legacy. Mantemos ela para não reescrever toda a lógica.
+import * as FileSystem from 'expo-file-system/legacy'
 import { Image as ExpoImage } from 'expo-image'
 import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
-import { unzipSync } from 'fflate'
+import { Unzip, UnzipInflate } from 'fflate'
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
@@ -89,6 +91,19 @@ function formatDuration(seconds) {
 async function ensureDirectories() {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true })
   await FileSystem.makeDirectoryAsync(FULL_DIR, { intermediates: true })
+}
+
+// Concatena vários Uint8Array (pedaços de um mesmo arquivo do zip) em um só.
+function concatUint8(chunks) {
+  let total = 0
+  for (const c of chunks) total += c.length
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) {
+    out.set(c, off)
+    off += c.length
+  }
+  return out
 }
 
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -952,46 +967,101 @@ export default function App() {
       setOfflineStatus('Lendo pacote…')
       await ensureDirectories()
 
-      // Lê o zip (base64 -> bytes) e descompacta.
-      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      })
-      const bytes = toByteArrayBase64(b64)
-      let entries
-      try {
-        entries = unzipSync(bytes)
-      } catch (_) {
-        setOfflineStatus('Pacote inválido (não é um zip válido)')
-        return
-      }
-
-      // Descobre os ids presentes (ignora manifest.json).
-      const names = Object.keys(entries).filter((n) => /\.jpg$/i.test(n))
-      const total = names.length
-      if (!total) {
-        setOfflineStatus('Pacote sem thumbnails')
-        return
-      }
-
-      // Grava cada thumb no disco; coleciona ids salvos.
+      // Descompacta em STREAMING para não estourar a memória (OutOfMemory):
+      // lê o zip do disco em blocos, alimenta o Unzip do fflate, e grava cada
+      // thumbnail no disco assim que ele sai — liberando a memória a cada item
+      // em vez de manter o zip inteiro + todas as entradas descomprimidas na RAM.
       const savedIds = new Set()
       let done = 0
-      for (const name of names) {
-        const id = parseInt(name.replace(/\.jpg$/i, ''), 10)
-        if (Number.isFinite(id)) {
-          try {
-            const jpgB64 = fromByteArrayBase64(entries[name])
-            await FileSystem.writeAsStringAsync(`${THUMB_DIR}${id}.jpg`, jpgB64, {
-              encoding: FileSystem.EncodingType.Base64,
-            })
-            savedIds.add(id)
-          } catch (_) {}
+
+      // Coleta o conteúdo de cada arquivo (chega em pedaços) e, ao fim do
+      // arquivo, grava no disco. Serializa as gravações numa fila para não
+      // acumular vários JPGs em memória ao mesmo tempo.
+      let writeChain = Promise.resolve()
+      let pendingWrites = 0
+
+      const unzipper = new Unzip()
+      unzipper.register(UnzipInflate) // suporta tanto ZIP_STORED quanto DEFLATE
+
+      unzipper.onfile = (file) => {
+        const m = /^(\d+)\.jpg$/i.exec(file.name)
+        if (!m) {
+          // manifest.json ou nome inesperado: descarta sem acumular dados.
+          file.ondata = () => {}
+          file.start()
+          return
         }
-        done++
-        if (done % 500 === 0 || done === total) {
-          setOfflineStatus(`Importando… ${done}/${total}`)
-          await new Promise((r) => setTimeout(r, 0)) // deixa a UI respirar
+        const id = parseInt(m[1], 10)
+        const chunks = []
+        file.ondata = (err, chunk, final) => {
+          if (err) return
+          if (chunk && chunk.length) chunks.push(chunk)
+          if (!final) return
+          // Junta os pedaços deste arquivo e enfileira a gravação no disco.
+          const jpgBytes = chunks.length === 1 ? chunks[0] : concatUint8(chunks)
+          chunks.length = 0
+          pendingWrites++
+          writeChain = writeChain.then(async () => {
+            try {
+              const jpgB64 = fromByteArrayBase64(jpgBytes)
+              await FileSystem.writeAsStringAsync(`${THUMB_DIR}${id}.jpg`, jpgB64, {
+                encoding: FileSystem.EncodingType.Base64,
+              })
+              savedIds.add(id)
+            } catch (_) {}
+            pendingWrites--
+            done++
+            if (done % 200 === 0) {
+              setOfflineStatus(`Importando… ${done}`)
+              await new Promise((r) => setTimeout(r, 0)) // deixa a UI respirar
+            }
+          })
         }
+        file.start()
+      }
+
+      // Lê o zip do disco em blocos e empurra pro unzipper. Como o Base64 do
+      // Expo carrega o arquivo inteiro, lemos por FATIAS (posição/tamanho) para
+      // manter o pico de memória baixo mesmo em pacotes grandes.
+      // Múltiplo de 3: cada leitura Base64 codifica blocos de 3 bytes -> 4 chars.
+      // Se o tamanho não for múltiplo de 3, fatias consecutivas desalinhariam e
+      // corromperiam os bytes na junção. 4.194.303 = 3 × 1.398.101 (~4 MB).
+      const CHUNK = 4194303
+      const info = await FileSystem.getInfoAsync(asset.uri, { size: true })
+      const fileSize = info.size || 0
+      if (!fileSize) {
+        setOfflineStatus('Pacote vazio ou inacessível')
+        return
+      }
+      let pos = 0
+      while (pos < fileSize) {
+        const length = Math.min(CHUNK, fileSize - pos)
+        const b64 = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+          position: pos,
+          length,
+        })
+        const chunk = toByteArrayBase64(b64)
+        pos += length
+        const isLast = pos >= fileSize
+        try {
+          unzipper.push(chunk, isLast)
+        } catch (err) {
+          setOfflineStatus(`Pacote inválido: ${err?.message || 'não é um zip válido'}`)
+          return
+        }
+        // Espera as gravações pendentes drenarem antes de ler o próximo bloco,
+        // evitando acumular muitos JPGs em memória (backpressure).
+        if (pendingWrites > 0) await writeChain
+        await new Promise((r) => setTimeout(r, 0))
+      }
+
+      // Garante que todas as gravações enfileiradas terminaram.
+      await writeChain
+
+      if (!savedIds.size) {
+        setOfflineStatus('Pacote sem thumbnails')
+        return
       }
 
       // Marca local_thumbnail_uri nos itens correspondentes.
@@ -1006,8 +1076,8 @@ export default function App() {
       }
 
       setOfflineStatus(`Pacote importado: ${savedIds.size} thumbnails`)
-    } catch (_) {
-      setOfflineStatus('Falha ao importar pacote')
+    } catch (err) {
+      setOfflineStatus(`Falha ao importar pacote: ${err?.message || err}`)
     } finally {
       offlineThumbsRef.current = false
       setOfflineThumbs(false)
@@ -1853,6 +1923,8 @@ export default function App() {
                   <Text style={styles.rowItemHint}>⎋</Text>
                 </Pressable>
               </View>
+
+              <Text style={styles.versionText}>PICS Mobile v0.2.0</Text>
             </View>
           )}
         />
@@ -2117,6 +2189,8 @@ const styles = StyleSheet.create({
   rowItemDanger: { color: '#dc2626' },
   rowItemHint: { marginLeft: 'auto', color: '#94a3b8', fontSize: 16 },
   rowDivider: { height: 1, backgroundColor: '#eef2f7' },
+
+  versionText: { textAlign: 'center', color: '#94a3b8', fontSize: 12, marginTop: 16, marginBottom: 8 },
 
   // Tab bar
   tabBar: { flexDirection: 'row', height: 62, borderTopWidth: 1, borderTopColor: '#e5eaf1', backgroundColor: '#ffffff' },

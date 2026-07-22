@@ -47,6 +47,9 @@ FOTOS/
 mobile/pics-mobile-debug-apk/
 *.zip
 
+# Scripts utilitarios locais (helpers de build/download; nao versionados)
+tools/
+
 # Lixo do Windows (Alternate Data Streams marcados como arquivo)
 *Zone.Identifier
 *:Zone.Identifier
