@@ -482,12 +482,18 @@ function AppInner() {
 
   const [albums, setAlbums] = useState([])
   const [openAlbumId, setOpenAlbumId] = useState(null)
+  // Mídias de cada álbum vindas do backend (mapa albumId -> array de itens).
+  // O álbum pode conter mídias que NÃO estão na lista sincronizada `items`
+  // (duplicadas/não-organizadas), então buscamos direto do servidor ao abrir.
+  const [albumMedia, setAlbumMedia] = useState({})
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [slideSeconds, setSlideSeconds] = useState(DEFAULT_SLIDE_SECONDS)
 
   const [newAlbumName, setNewAlbumName] = useState('')
   const [showNewAlbum, setShowNewAlbum] = useState(false)
+  const [renameAlbumId, setRenameAlbumId] = useState(null)
+  const [renameAlbumName, setRenameAlbumName] = useState('')
 
   const [slideshow, setSlideshow] = useState(null)
   const [slideIndex, setSlideIndex] = useState(0)
@@ -603,6 +609,44 @@ function AppInner() {
     }
   }
 
+  // Busca as mídias de um álbum direto do backend (que retorna TODAS, inclusive
+  // as que não estão na lista sincronizada). Cada item é montado no formato que
+  // a grade usa; quando a mídia já existe em `items`, reaproveita a thumbnail
+  // local (offline). thumbnail_url do backend vem relativo (/api/...), então
+  // aqui viramos absoluto para o expo-image conseguir baixar.
+  async function loadAlbumMedia(albumId, activeToken = token, activeBaseUrl = baseUrl) {
+    if (!activeToken || !albumId) return
+    try {
+      const base = normalizeBaseUrl(activeBaseUrl)
+      const byId = new Map(items.map((it) => [it.id, it]))
+      const collected = []
+      let page = 1
+      while (true) {
+        const url = apiUrl(activeBaseUrl, `/albums/${albumId}/media?page=${page}&per_page=200`)
+        const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) })
+        if (!response.ok) throw new Error(`Álbum falhou (${response.status})`)
+        const data = await response.json()
+        for (const raw of data.items || []) {
+          const local = byId.get(raw.id)
+          const absoluteThumb = raw.thumbnail_url
+            ? (/^https?:\/\//i.test(raw.thumbnail_url) ? raw.thumbnail_url : `${base}${raw.thumbnail_url}`)
+            : (local ? local.thumbnail_url : `${base}/api/media/${raw.id}/thumbnail?size=300`)
+          collected.push({
+            ...raw,
+            thumbnail_url: absoluteThumb,
+            local_thumbnail_uri: local ? local.local_thumbnail_uri : null,
+            thumbnail_failed: local ? local.thumbnail_failed : false,
+          })
+        }
+        if (!data.pages || page >= data.pages) break
+        page += 1
+      }
+      setAlbumMedia((prev) => ({ ...prev, [albumId]: collected }))
+    } catch (_) {
+      // Offline ou erro: cai no fallback (lista sincronizada) na renderização.
+    }
+  }
+
   function createAlbum() {
     setNewAlbumName('')
     setShowNewAlbum(true)
@@ -662,6 +706,30 @@ function AppInner() {
       await loadAlbums()
     } catch (error) {
       Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, `/albums/${albumId}/media`)))
+    }
+  }
+
+  function startRenameAlbum(album) {
+    setRenameAlbumId(album.id)
+    setRenameAlbumName(album.name)
+  }
+
+  async function confirmRenameAlbum() {
+    const albumId = renameAlbumId
+    const trimmed = renameAlbumName.trim()
+    setRenameAlbumId(null)
+    if (!albumId || !trimmed) return
+    try {
+      const url = apiUrl(baseUrl, `/albums/${albumId}`)
+      const response = await fetchWithTimeout(url, {
+        method: 'PUT',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      })
+      if (!response.ok) throw new Error(`Falha ao renomear (${response.status})`)
+      await loadAlbums()
+    } catch (error) {
+      Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, `/albums/${albumId}`)))
     }
   }
 
@@ -844,13 +912,15 @@ function AppInner() {
       // mais lento — pág 66 tem que percorrer 65k linhas), pedimos ao servidor
       // apenas os itens DEPOIS do último recebido. Cada página é O(per_page),
       // sempre rápida. Cursor = (updated_at, id) do último item da página.
-      let afterUpdatedAt = null
       let afterId = null
 
       while (true) {
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
-        const cursorParam = (afterUpdatedAt != null && afterId != null)
-          ? `&after_updated_at=${encodeURIComponent(afterUpdatedAt)}&after_id=${encodeURIComponent(afterId)}`
+        // Cursor keyset por id apenas (PK). NÃO usar updated_at no cursor: há
+        // dezenas de milhares de itens com o mesmo updated_at (importação em
+        // lote) e o cursor (updated_at,id) emperrava nesses grupos (~81k/110k).
+        const cursorParam = (afterId != null)
+          ? `&after_id=${encodeURIComponent(afterId)}`
           : ''
         // per_page=500 (era 1000): respostas menores reduzem a chance do stream
         // HTTP/2 do Caddy abortar ("http2: stream closed") em rede movel, que
@@ -884,14 +954,13 @@ function AppInner() {
 
         nextSyncToken = data.sync_token
 
-        // Avança o cursor keyset a partir do próprio servidor (fallback: último item).
+        // Avança o cursor keyset (por id) a partir do próprio servidor
+        // (fallback: id do último item da página).
+        const prevAfterId = afterId
         if (data.next_cursor && data.next_cursor.after_id != null) {
-          afterUpdatedAt = data.next_cursor.after_updated_at
           afterId = data.next_cursor.after_id
         } else if (data.items.length) {
-          const lastItem = data.items[data.items.length - 1]
-          afterUpdatedAt = lastItem.updated_at || afterUpdatedAt
-          afterId = lastItem.id
+          afterId = data.items[data.items.length - 1].id
         }
 
         // Salva progresso periodicamente (não a cada página) para não perder o
@@ -901,6 +970,10 @@ function AppInner() {
         }
 
         if (!data.has_more) break
+        // Guarda anti-loop: se o cursor não avançou, para (não deveria ocorrer
+        // com keyset por id, mas evita travar para sempre numa página).
+        if (afterId != null && prevAfterId != null && afterId <= prevAfterId) break
+        if (!data.items.length) break
         page += 1
       }
 
@@ -1237,7 +1310,10 @@ function AppInner() {
   }
 
   async function startSlideshow(album) {
-    const albumItems = album.itemIds.map((id) => items.find((item) => item.id === id)).filter(Boolean)
+    const fromServer = albumMedia[album.id]
+    const albumItems = (fromServer && fromServer.length)
+      ? fromServer
+      : album.itemIds.map((id) => items.find((item) => item.id === id)).filter(Boolean)
     if (!albumItems.length) {
       Alert.alert('Slideshow', 'Este álbum está vazio.')
       return
@@ -1292,6 +1368,14 @@ function AppInner() {
       if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
     }
   }, [slideshow, slideIndex, slideSeconds])
+
+  // Ao abrir um álbum, busca as mídias dele no backend (inclui itens fora da
+  // lista sincronizada). Assim álbuns cuja contagem aparece mas abriam vazios
+  // passam a mostrar as fotos.
+  useEffect(() => {
+    if (openAlbumId) loadAlbumMedia(openAlbumId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openAlbumId])
 
   const groupedLabel = useMemo(() => {
     if (!items.length) return 'Nenhuma mídia offline ainda'
@@ -1720,8 +1804,15 @@ function AppInner() {
             )}
             renderItem={({ item: album }) => {
               const cover = album.itemIds.map((id) => items.find((it) => it.id === id)).find(Boolean)
+              const openAlbumMenu = () => {
+                Alert.alert(album.name, 'O que deseja fazer?', [
+                  { text: 'Renomear', onPress: () => startRenameAlbum(album) },
+                  { text: 'Excluir', style: 'destructive', onPress: () => deleteAlbum(album.id) },
+                  { text: 'Cancelar', style: 'cancel' },
+                ])
+              }
               return (
-                <Pressable style={styles.albumRow} onPress={() => setOpenAlbumId(album.id)} onLongPress={() => deleteAlbum(album.id)}>
+                <Pressable style={styles.albumRow} onPress={() => setOpenAlbumId(album.id)} onLongPress={openAlbumMenu} delayLongPress={250}>
                   <View style={styles.albumCover}>
                     {cover ? (
                       <ExpoImage source={thumbSource(cover)} style={{ width: '100%', height: '100%', borderRadius: 10 }} contentFit="cover" cachePolicy="memory-disk" recyclingKey={String(cover.id)} />
@@ -1733,6 +1824,9 @@ function AppInner() {
                     <Text style={styles.albumName} numberOfLines={1}>{album.name}</Text>
                     <Text style={styles.albumCount}>{album.itemIds.length} itens</Text>
                   </View>
+                  <Pressable style={styles.albumEdit} onPress={() => startRenameAlbum(album)} hitSlop={8}>
+                    <Text style={styles.albumEditText}>✏️</Text>
+                  </Pressable>
                   <Pressable style={styles.albumPlay} onPress={() => startSlideshow(album)}>
                     <Text style={styles.albumPlayText}>▶</Text>
                   </Pressable>
@@ -1755,7 +1849,12 @@ function AppInner() {
             </Pressable>
           </View>
           <FlatList
-            data={chunkItems(openAlbum.itemIds.map((id) => items.find((it) => it.id === id)).filter(Boolean), 3)}
+            data={chunkItems(
+              (albumMedia[openAlbum.id] && albumMedia[openAlbum.id].length)
+                ? albumMedia[openAlbum.id]
+                : openAlbum.itemIds.map((id) => items.find((it) => it.id === id)).filter(Boolean),
+              3,
+            )}
             keyExtractor={(_, index) => `album-row-${index}`}
             contentContainerStyle={styles.grid}
             ListEmptyComponent={(
@@ -1994,6 +2093,23 @@ function AppInner() {
         </View>
       </Modal>
 
+      <Modal visible={renameAlbumId !== null} animationType="fade" transparent onRequestClose={() => setRenameAlbumId(null)}>
+        <View style={styles.dialogBackdrop}>
+          <View style={styles.dialogCard}>
+            <Text style={styles.dialogTitle}>Renomear álbum</Text>
+            <TextInput style={styles.input} value={renameAlbumName} onChangeText={setRenameAlbumName} placeholder="Nome do álbum" placeholderTextColor="#9aa4b2" selectionColor="#2563eb" cursorColor="#2563eb" autoFocus />
+            <View style={styles.dialogActions}>
+              <Pressable style={styles.dialogCancel} onPress={() => setRenameAlbumId(null)}>
+                <Text style={styles.dialogCancelText}>Cancelar</Text>
+              </Pressable>
+              <Pressable style={styles.dialogConfirm} onPress={confirmRenameAlbum}>
+                <Text style={styles.dialogConfirmText}>Salvar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {!!slidePreparing && (
         <View style={styles.slidePrepare}>
           <ActivityIndicator size="large" color="#ffffff" />
@@ -2136,6 +2252,8 @@ const styles = StyleSheet.create({
   albumCount: { color: '#64748b', fontSize: 12, marginTop: 2 },
   albumPlay: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
   albumPlayText: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
+  albumEdit: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#eef2f7', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
+  albumEditText: { fontSize: 16 },
   newAlbumButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginHorizontal: 16, marginBottom: 12, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#c7d2fe', backgroundColor: '#eef2ff' },
   newAlbumButtonText: { color: '#2563eb', fontWeight: '800' },
   albumHeaderBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingTop: 12 },

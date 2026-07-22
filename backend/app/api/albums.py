@@ -210,13 +210,23 @@ def _album_to_dict(album: Album, db: Session, include_items: bool = False) -> di
 
 
 def _media_to_dict(media: Media) -> dict:
-    """Converte mídia para dicionário simplificado."""
+    """Converte mídia para dicionário.
+
+    Inclui os campos que o app mobile usa para renderizar a grade do álbum
+    (thumbnail_url, duration_seconds, sha256_hash), para que álbuns com mídias
+    que NÃO estão na lista sincronizada (ex.: duplicadas ou não-organizadas)
+    também apareçam. O app resolve thumbnail_url relativo com o baseUrl dele.
+    """
     return {
         "id": media.id,
         "filename": media.filename,
         "media_type": media.media_type,
         "date_taken": media.date_taken.isoformat() if media.date_taken else None,
+        "updated_at": media.updated_at.isoformat() if media.updated_at else None,
         "width": media.width,
         "height": media.height,
+        "duration_seconds": media.duration_seconds,
+        "sha256_hash": media.sha256_hash,
         "ai_description": media.ai_description,
+        "thumbnail_url": f"/api/media/{media.id}/thumbnail?size=300",
     }
