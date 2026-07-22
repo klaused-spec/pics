@@ -1,22 +1,42 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy import text
 
 from app.core.config import settings
 
+_is_sqlite = "sqlite" in settings.database_url
+
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
+    connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
-# If using SQLite, enable WAL journal mode and a busy timeout to reduce "database is locked" errors
-if "sqlite" in settings.database_url:
+
+# SQLite: aplica os PRAGMAs em TODA nova conexão do pool (não só uma vez no
+# import). O busy_timeout é POR CONEXÃO — se não for setado em cada conexão do
+# pool, as leituras (ex.: /sync/manifest) usam o default 0 e falham na hora que
+# o worker de AI/faces/scan segura o lock de escrita, causando o sync do app
+# travar por horas numa página. Com WAL + busy_timeout alto, o leitor espera o
+# writer liberar em vez de estourar erro imediatamente.
+if _is_sqlite:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA busy_timeout=30000;")  # 30s: espera o writer
+            cursor.execute("PRAGMA synchronous=NORMAL;")   # seguro com WAL, mais rápido
+        finally:
+            cursor.close()
+
+    # Garante o WAL de imediato (o listener acima cobre as demais conexões).
     try:
         with engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL;"))
-            conn.execute(text("PRAGMA busy_timeout=5000;"))
+            conn.execute(text("PRAGMA busy_timeout=30000;"))
     except Exception:
         # Avoid crashing on startup if PRAGMA fails; logs will show issues
         pass
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

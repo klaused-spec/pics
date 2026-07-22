@@ -12,6 +12,21 @@
 	auto_https off
 }
 
+# --- Bloco de TESTE sem SSL (HTTP puro na 8080) ---
+# Acesse http://localhost:8080 para testar sem lidar com certificado.
+:8080 {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
+	}
+	handle {
+		root * C:\src\pics\frontend\dist
+		try_files {path} /index.html
+		file_server
+	}
+}
+
 pics.meulavoro.com.br:8443 {
 	# Certificado gerado pelo certbot (ver issue-cert.ps1)
 	tls C:\caddy\certs\fullchain.pem C:\caddy\certs\privkey.pem

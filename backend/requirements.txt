@@ -9,6 +9,9 @@ python-multipart==0.0.9
 imagehash==4.3.1
 exifread==3.0.0
 ffmpeg-python==0.2.0
+tifffile==2024.8.30
+imagecodecs==2024.9.22
+imageio==2.37.4
 openai==1.51.0
 numpy==1.26.4
 onnxruntime==1.19.2

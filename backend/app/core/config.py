@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from pydantic import field_validator, model_validator
 from pathlib import Path
 from typing import Any
+import json
 import os
 
 
@@ -50,6 +51,44 @@ class Settings(BaseSettings):
     @library_folders.setter
     def library_folders(self, value: list[str]):
         self.library_folders_raw = ",".join(value)
+
+    # rclone (download de OneDrive/outros remotes para o source_dir)
+    rclone_enabled: bool = False
+    rclone_path: str = "rclone"
+    rclone_transfers: int = 8
+    rclone_checkers: int = 16
+    rclone_interval_minutes: int = 60
+    # Destino dos downloads (vazio = usa source_dir)
+    rclone_dest_dir: str = ""
+    # Flags de performance do rclone (0 = deixa o rclone decidir)
+    rclone_multi_thread_streams: int = 0
+    rclone_buffer_size: str = "256M"
+    rclone_onedrive_chunk_size: str = "10M"
+    # Intervalo dos stats na saída (para acompanhar o progresso) e verbosidade
+    rclone_stats_interval: str = "10s"
+    rclone_log_level: str = "INFO"
+    # Perfis em JSON: lista de objetos {name, remote, folders}
+    # Ex: [{"name":"klauskirner","remote":"onedrive-klauskirner","folders":["Imagens","Pictures"]}]
+    # folders vazio/ausente = conta inteira.
+    rclone_remotes_raw: str = ""
+
+    @property
+    def rclone_remotes(self) -> list[dict]:
+        if not self.rclone_remotes_raw:
+            return []
+        try:
+            data = json.loads(self.rclone_remotes_raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        result = []
+        for entry in data:
+            name = (entry.get("name") or "").strip()
+            if not name:
+                continue
+            remote = (entry.get("remote") or f"onedrive-{name}").strip()
+            folders = [f.strip() for f in entry.get("folders", []) if f and f.strip()]
+            result.append({"name": name, "remote": remote, "folders": folders})
+        return result
 
     # Banco de dados
     database_url: str = "sqlite:///./pics.db"

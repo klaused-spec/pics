@@ -73,6 +73,38 @@ def _update_job(job_id: int, status: str, processed_items: int = None, total_ite
         db.close()
 
 
+def run_rclone_download_job() -> dict:
+    """Job: baixa remotes configurados via rclone para o source_dir.
+
+    Deduplica pré-download por nome de arquivo (consultando o banco) e deixa o
+    scan/organizador organizar e deduplicar por SHA256 o que foi baixado.
+    """
+    from app.services.rclone_sync import run_rclone_download
+
+    job_id = _create_job("rclone_download")
+
+    def _on_progress(done: int, total: int, last_line: str):
+        # Atualiza o job a cada pasta concluída / linha de status do rclone,
+        # permitindo acompanhar o andamento na web (barra de progresso).
+        _update_job(job_id, "running", processed_items=done, total_items=total)
+
+    try:
+        with media_file_operation_lock:
+            result = run_rclone_download(on_progress=_on_progress)
+        _update_job(
+            job_id,
+            "completed",
+            processed_items=result.get("folders", 0),
+            total_items=result.get("total_folders", result.get("folders", 0)),
+        )
+        logger.info(f"[rclone] concluído: {result}")
+        return result
+    except Exception as e:
+        _update_job(job_id, "failed", error_message=str(e))
+        logger.error(f"[rclone] job falhou: {e}")
+        raise
+
+
 def _preprocess_library_file(filepath: str) -> dict:
     """
     Pré-processa um arquivo de biblioteca em paralelo (sem acesso ao DB).
@@ -139,6 +171,16 @@ def _run_scan_and_organize_locked() -> int:
         )
         db.add(job)
         db.commit()
+
+        # Converte .dng (RAW) em .jpg antes de escanear, para que sejam indexados
+        # (o pics não reconhece .dng; o .jpg gerado entra no scan normalmente).
+        try:
+            from app.services.dng_converter import convert_dng_in_dir
+            convert_dng_in_dir(settings.source_dir)
+            for lib in getattr(settings, "library_folders", []) or []:
+                convert_dng_in_dir(lib)
+        except Exception as e:
+            logger.error(f"[dng] pré-conversão falhou (ignorado): {e}")
 
         # Escaneia novos arquivos (source + library/organized)
         source_files = scan_source_directory(db)
@@ -392,10 +434,66 @@ def run_face_detection(batch_size: int = None) -> int:
         db.close()
 
 
+def _warmup_one(task: dict, size: int) -> bool:
+    """Gera UM thumbnail (chamado em paralelo por threads). Sem acesso ao DB.
+
+    `task` = {id, filename, media_type, source_path, cache_path}.
+    Retorna True se o thumb ficou disponível (gerado agora ou já válido).
+    """
+    from app.services.organizer import generate_image_thumbnail, generate_video_thumbnail
+    from PIL import Image
+
+    source_path = task["source_path"]
+    cache_path = task["cache_path"]
+    if not source_path or not os.path.exists(source_path):
+        return False
+
+    # Pula se já existe cache atualizado (mais novo que a origem).
+    if os.path.exists(cache_path):
+        try:
+            if os.path.getmtime(cache_path) >= os.path.getmtime(source_path):
+                return True
+        except Exception:
+            pass
+
+    try:
+        if task["media_type"] == "image":
+            return bool(generate_image_thumbnail(source_path, cache_path, size=size))
+        thumb_tmp = cache_path + ".tmp"
+        if generate_video_thumbnail(source_path, thumb_tmp):
+            try:
+                img = Image.open(thumb_tmp)
+                img.thumbnail((size, size))
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(cache_path, format="JPEG", quality=80)
+                return True
+            except Exception:
+                return False
+            finally:
+                if os.path.exists(thumb_tmp):
+                    try:
+                        os.unlink(thumb_tmp)
+                    except Exception:
+                        pass
+        return False
+    except Exception as e:
+        logger.debug(f"Erro no thumbnail warmup ({source_path}): {e}")
+        return False
+
+
 def run_thumbnail_warmup(size: int = 300) -> int:
+    """Pré-gera thumbnails em cache para mídias organizadas — AGRESSIVO.
+
+    Otimizações vs. versão antiga (que fazia ~25k em semanas):
+      - Paraleliza a geração com ThreadPoolExecutor (usa todos os núcleos;
+        PIL libera o GIL na decodificação/resize, ffmpeg roda em subprocesso).
+      - Commita o progresso EM LOTE (a cada N), não a cada item — evita 110k
+        fsync do WAL, que era o maior gargalo.
+      - Pré-filtra no próprio worker (arquivos já com cache válido não pesam).
     """
-    Pré-gera thumbnails em cache para mídias organizadas.
-    """
+    from app.services.organizer import get_cached_thumbnail_path
+
     db = SessionLocal()
     try:
         existing = db.query(ProcessingJob).filter(
@@ -414,76 +512,59 @@ def run_thumbnail_warmup(size: int = 300) -> int:
         db.add(job)
         db.commit()
 
-        media_items = db.query(Media).filter(
+        # Extrai os dados necessários (fora da thread) e fecha a leitura pesada.
+        rows = db.query(
+            Media.id, Media.filename, Media.media_type,
+            Media.organized_path, Media.original_path,
+        ).filter(
             Media.is_duplicate == False,
             Media.is_organized == True,
         ).all()
 
-        job.total_items = len(media_items)
+        tasks = [
+            {
+                "id": r.id,
+                "filename": r.filename,
+                "media_type": r.media_type,
+                "source_path": r.organized_path or r.original_path,
+                "cache_path": get_cached_thumbnail_path(r.id, r.filename),
+            }
+            for r in rows
+        ]
+
+        job.total_items = len(tasks)
         db.commit()
 
-        from app.services.organizer import get_cached_thumbnail_path, generate_image_thumbnail, generate_video_thumbnail
-        from PIL import Image
-
+        # Nº de workers: I/O + CPU misto. min(32, cpus*4) é um bom teto p/ disco.
+        max_workers = min(32, (os.cpu_count() or 4) * 4)
         processed = 0
-        for media in media_items:
-            try:
-                cache_path = get_cached_thumbnail_path(media.id, media.filename)
-                source_path = media.organized_path or media.original_path
-                if not os.path.exists(source_path):
-                    logger.warning(f"Thumbnail warmup: arquivo não encontrado {source_path}")
-                else:
-                    if os.path.exists(cache_path):
-                        try:
-                            source_mtime = os.path.getmtime(source_path)
-                            cache_mtime = os.path.getmtime(cache_path)
-                            if cache_mtime >= source_mtime:
-                                processed += 1
-                                job.processed_items = processed
-                                db.commit()
-                                continue
-                        except Exception:
-                            pass
+        COMMIT_EVERY = 200
 
-                    if media.media_type == "image":
-                        generate_image_thumbnail(source_path, cache_path, size=size)
-                    else:
-                        thumb_tmp = cache_path + ".tmp"
-                        if generate_video_thumbnail(source_path, thumb_tmp):
-                            try:
-                                img = Image.open(thumb_tmp)
-                                img.thumbnail((size, size))
-                                if img.mode in ("RGBA", "P"):
-                                    img = img.convert("RGB")
-                                img.save(cache_path, format="JPEG", quality=80)
-                            except Exception as e:
-                                logger.debug(f"Erro ao salvar thumbnail de vídeo {source_path}: {e}")
-                            finally:
-                                if os.path.exists(thumb_tmp):
-                                    os.unlink(thumb_tmp)
-
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_warmup_one, t, size) for t in tasks]
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    logger.debug(f"Thumbnail warmup task falhou: {e}")
                 processed += 1
-                job.processed_items = processed
-                db.commit()
-            except Exception as e:
-                logger.error(f"Erro no thumbnail warmup para {media.filename}: {e}")
-                processed += 1
-                job.processed_items = processed
-                db.commit()
-                continue
+                if processed % COMMIT_EVERY == 0 or processed == len(tasks):
+                    job.processed_items = processed
+                    safe_commit(db, "warmup progress")
 
         job.status = "completed"
         job.completed_at = datetime.datetime.utcnow()
-        db.commit()
+        job.processed_items = processed
+        safe_commit(db, "finalize warmup")
 
-        logger.info(f"Thumbnail warmup completo: {processed}/{len(media_items)} mídias processadas")
+        logger.info(f"Thumbnail warmup completo: {processed}/{len(tasks)} mídias (workers={max_workers})")
         return processed
 
     except Exception as e:
         logger.error(f"Erro no job de thumbnail warmup: {e}")
         job.status = "failed"
         job.error_message = str(e)
-        db.commit()
+        safe_commit(db, "fail warmup")
         return 0
     finally:
         db.close()

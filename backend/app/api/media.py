@@ -24,6 +24,60 @@ from app.services.file_ops import media_file_operation_lock
 router = APIRouter(prefix="/media", tags=["media"])
 
 
+# --- Índice do cache de thumbnails (id -> caminho no disco) ---------------
+# Construído com UM único os.scandir e reutilizado entre requests. Evita o
+# custo catastrófico de globbar/escanear a pasta (dezenas de milhares de
+# arquivos, em disco lento) uma vez por lote — ou pior, uma vez por id
+# inexistente. Invalidado por tempo (TTL) e quando o nº de arquivos muda.
+_THUMB_INDEX: dict[str, str] = {}
+_THUMB_INDEX_BUILT_AT: float = 0.0
+_THUMB_INDEX_TTL = 300.0  # 5 min
+_THUMB_INDEX_SIZE = None  # size (px) para o qual o índice foi montado
+
+
+def _thumb_cache_dir() -> str:
+    return os.path.join(settings.organized_dir, ".thumbnails", "images")
+
+
+def _build_thumb_index(size: int) -> dict[str, str]:
+    """Monta id -> caminho lendo o diretório UMA vez.
+
+    Convivem dois padrões: {id}_{size}.jpg (preferido) e {id}_{nome}.jpg.
+    """
+    cache_dir = _thumb_cache_dir()
+    index: dict[str, str] = {}
+    preferred_suffix = f"_{size}.jpg"
+    try:
+        with os.scandir(cache_dir) as it:
+            for entry in it:
+                name = entry.name
+                if not name.endswith(".jpg"):
+                    continue
+                prefix = name.split("_", 1)[0]
+                # Prioriza "{id}_{size}.jpg"; senão fica com o primeiro que achar.
+                if prefix not in index or name.endswith(preferred_suffix):
+                    index[prefix] = entry.path
+    except FileNotFoundError:
+        pass
+    return index
+
+
+def _get_thumb_index(size: int) -> dict[str, str]:
+    """Retorna o índice, reconstruindo se expirou o TTL ou mudou o size."""
+    import time
+    global _THUMB_INDEX, _THUMB_INDEX_BUILT_AT, _THUMB_INDEX_SIZE
+    now = time.monotonic()
+    if (
+        not _THUMB_INDEX
+        or _THUMB_INDEX_SIZE != size
+        or now - _THUMB_INDEX_BUILT_AT > _THUMB_INDEX_TTL
+    ):
+        _THUMB_INDEX = _build_thumb_index(size)
+        _THUMB_INDEX_BUILT_AT = now
+        _THUMB_INDEX_SIZE = size
+    return _THUMB_INDEX
+
+
 def _is_in_library_folder(filepath: str) -> bool:
     """Verifica se o arquivo está em uma das library_folders (não em organized_dir)."""
     if not filepath:
@@ -649,6 +703,31 @@ class ThumbnailZipRequest(BaseModel):
     ids: list[int]
 
 
+class ThumbnailHaveRequest(BaseModel):
+    ids: list[int]
+
+
+@router.post("/thumbnails/have")
+def thumbnails_have(
+    payload: ThumbnailHaveRequest,
+    size: int = Query(300, ge=50, le=800),
+    current_user: dict = Depends(get_current_user),
+):
+    """Dado um lote de ids, retorna QUAIS já têm thumbnail em cache no servidor.
+
+    O app usa isso para baixar SÓ o que existe (via /thumbnails/zip) e pular os
+    que ainda não foram gerados — o job de warmup preenche o resto em background
+    e a navegação gera sob demanda. Usa o índice em memória (id -> caminho),
+    então é O(len(ids)) sem tocar o disco por item.
+    """
+    ids = payload.ids or []
+    if len(ids) > 5000:
+        raise HTTPException(status_code=400, detail="Máximo de 5000 ids por consulta")
+    index = _get_thumb_index(size)
+    have = [i for i in ids if str(i) in index]
+    return {"have": have}
+
+
 @router.post("/thumbnails/zip")
 def download_thumbnails_zip(
     payload: ThumbnailZipRequest,
@@ -668,35 +747,18 @@ def download_thumbnails_zip(
     if len(ids) > 2000:
         raise HTTPException(status_code=400, detail="Máximo de 2000 ids por lote")
 
-    cache_dir = os.path.join(settings.organized_dir, ".thumbnails", "images")
-
-    # No cache convivem dois padrões de nome:
-    #   {id}_{size}.jpg           (gerado por GET /thumbnail)
-    #   {id}_{nome_original}.jpg  (gerado pelo organizer / web)
-    # Construímos um índice id -> caminho listando o diretório UMA vez por lote
-    # (barato) e mapeando pelo prefixo "{id}_". Preferimos o "_{size}.jpg".
-    id_set = set(str(i) for i in ids)
-    index = {}
-    try:
-        with os.scandir(cache_dir) as it:
-            for entry in it:
-                name = entry.name
-                if not name.endswith(".jpg"):
-                    continue
-                prefix = name.split("_", 1)[0]
-                if prefix not in id_set:
-                    continue
-                # Prioriza o arquivo "{id}_{size}.jpg" se existir.
-                if prefix not in index or name == f"{prefix}_{size}.jpg":
-                    index[prefix] = entry.path
-    except FileNotFoundError:
-        index = {}
+    # Resolve os caminhos a partir de um índice em memória (id -> caminho),
+    # montado com UM único scandir e reutilizado entre requests. Cada lote é
+    # O(len(ids)) puro em memória — sem tocar o disco por id (antes: um glob por
+    # id, e a maioria dos ~110k ids NÃO tem thumb em cache, então cada um varria
+    # a pasta inteira -> horas). IDs sem cache são simplesmente omitidos.
+    index = _get_thumb_index(size)
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as zf:
         for media_id in ids:
             cache_path = index.get(str(media_id))
-            if cache_path and os.path.exists(cache_path):
+            if cache_path:
                 try:
                     zf.write(cache_path, arcname=f"{media_id}.jpg")
                 except Exception:

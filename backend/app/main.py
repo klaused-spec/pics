@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.core.config import settings
 from app.core.database import init_db, backup_env_to_db, restore_env_from_db
 from app.api import auth_router, media_router, persons_router, jobs_router, albums_router, settings_router, mobile_router
-from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync
+from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync, run_rclone_download_job, run_thumbnail_warmup
 
 # Configuração de logging
 logging.basicConfig(
@@ -80,6 +80,25 @@ async def lifespan(app: FastAPI):
         id="sync_files",
         replace_existing=True,
     )
+    # Pré-gera thumbnails em background para que o app mobile encontre thumb
+    # pronto no cache (o sync do app baixa SÓ o que já existe; o warmup vai
+    # preenchendo o resto no ritmo do servidor). Roda logo após o scan.
+    scheduler.add_job(
+        run_thumbnail_warmup,
+        "interval",
+        minutes=settings.scan_interval_minutes + 2,
+        id="thumbnail_warmup",
+        replace_existing=True,
+        next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=30),
+    )
+    if settings.rclone_enabled:
+        scheduler.add_job(
+            run_rclone_download_job,
+            "interval",
+            minutes=settings.rclone_interval_minutes,
+            id="rclone_download",
+            replace_existing=True,
+        )
     scheduler.start()
     logger.info("Scheduler iniciado")
 

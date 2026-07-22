@@ -20,6 +20,7 @@ from app.workers.processor import (
     run_sync_job,
     run_purge_missing_job,
     run_database_audit,
+    run_rclone_download_job,
 )
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -66,6 +67,28 @@ def start_scan(
     """Inicia job de scan e organização de novos arquivos."""
     background_tasks.add_task(run_scan_and_organize)
     return {"message": "Job de scan iniciado em background"}
+
+
+@router.post("/rclone-download")
+def start_rclone_download(
+    current_user: dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    """Baixa arquivos dos remotes (OneDrive) via rclone para o source_dir."""
+    if not settings.rclone_enabled:
+        raise HTTPException(status_code=403, detail="rclone desativado nas configurações (rclone_enabled=false)")
+    background_tasks.add_task(run_rclone_download_job)
+    return {"message": "Job de download rclone iniciado em background"}
+
+
+@router.get("/rclone-log")
+def get_rclone_download_log(
+    current_user: dict = Depends(get_current_user),
+):
+    """Retorna as últimas linhas de log do rclone para acompanhar na web."""
+    from app.services.rclone_sync import get_rclone_log
+    return {"lines": get_rclone_log()}
 
 
 @router.post("/ai-process")

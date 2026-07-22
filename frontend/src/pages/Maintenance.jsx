@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
-import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X } from 'lucide-react'
-import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob } from '../api'
+import { useState, useEffect, useRef } from 'react'
+import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X, Cloud } from 'lucide-react'
+import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob } from '../api'
 
 export default function Maintenance() {
   const [audit, setAudit] = useState(null)
@@ -10,13 +10,33 @@ export default function Maintenance() {
   const [expanded, setExpanded] = useState(true)
   const [message, setMessage] = useState(null)
   const [resumingJobId, setResumingJobId] = useState(null)
+  const [rcloneLog, setRcloneLog] = useState([])
+  const rcloneLogRef = useRef(null)
+
+  useEffect(() => {
+    // Mantém o log rolado para a última linha conforme chegam novas.
+    if (rcloneLogRef.current) {
+      rcloneLogRef.current.scrollTop = rcloneLogRef.current.scrollHeight
+    }
+  }, [rcloneLog])
 
   useEffect(() => {
     loadAudit()
     loadJobs()
+    loadRcloneLog()
     const interval = setInterval(loadJobs, 5000)
-    return () => clearInterval(interval)
+    const logInterval = setInterval(loadRcloneLog, 3000)
+    return () => { clearInterval(interval); clearInterval(logInterval) }
   }, [])
+
+  async function loadRcloneLog() {
+    try {
+      const res = await getRcloneLog()
+      setRcloneLog(res.data.lines || [])
+    } catch (err) {
+      // silencioso: rclone pode estar desativado
+    }
+  }
 
   async function loadAudit() {
     try {
@@ -49,6 +69,7 @@ export default function Maintenance() {
       else if (action === 'faces') await startFaceDetection()
       else if (action === 'full') await startFullPipeline()
       else if (action === 'purge') await startPurgeMissing()
+      else if (action === 'rclone') await startRcloneDownload()
       else if (action === 'warmup_cache') {
         await startThumbnailWarmup()
         setMessage({ type: 'success', text: 'Cache de thumbnails iniciado em segundo plano.' })
@@ -132,6 +153,7 @@ export default function Maintenance() {
     sync: 'Sync',
     purge_missing: 'Limpar Missing',
     thumbnail_warmup: 'Warmup de Thumbnails',
+    rclone_download: 'Download OneDrive (rclone)',
   }
 
   const maintenanceActions = [
@@ -148,6 +170,13 @@ export default function Maintenance() {
       label: 'Escanear',
       description: 'Encontra e indexa novos arquivos',
       name: 'Scan',
+    },
+    {
+      action: 'rclone',
+      icon: <Cloud className="w-4 h-4" />,
+      label: 'Baixar do OneDrive',
+      description: 'Baixa remotes via rclone para o source',
+      name: 'Download rclone',
     },
     {
       action: 'ai',
@@ -183,7 +212,7 @@ export default function Maintenance() {
       action: 'warmup_cache',
       icon: <Database className="w-4 h-4" />,
       label: 'Cache de Thumbnails',
-      description: 'Pré-gera thumbnails para abrir galeria rápido',
+      description: 'Gera TODAS as thumbnails em paralelo (rápido)',
       name: 'Thumbnail cache warmup',
     },
     {
@@ -376,6 +405,21 @@ export default function Maintenance() {
         )}
       </div>
 
+      {/* Log do rclone (OneDrive) - antes das Recomendações */}
+      {rcloneLog.length > 0 && (
+        <div className="bg-white rounded-xl shadow p-6 space-y-3">
+          <h2 className="text-lg font-semibold flex items-center gap-2 text-gray-900">
+            <Cloud className="w-5 h-5" /> Log do Download (OneDrive)
+          </h2>
+          <pre
+            ref={rcloneLogRef}
+            className="bg-gray-900 text-green-300 text-xs rounded-lg p-4 h-40 overflow-auto whitespace-pre-wrap font-mono"
+          >
+            {rcloneLog.join('\n')}
+          </pre>
+        </div>
+      )}
+
       {/* Recomendações */}
       {audit && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 space-y-3">
@@ -425,7 +469,7 @@ function ActionButton({ icon, label, description, action, executing, onClick, de
           )}
         </div>
         <div>
-          <p className="font-medium text-sm">{label}</p>
+          <p className="font-medium text-sm text-gray-900">{label}</p>
           <p className="text-xs text-gray-600">{description}</p>
         </div>
       </div>

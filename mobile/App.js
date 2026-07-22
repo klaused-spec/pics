@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
+import * as DocumentPicker from 'expo-document-picker'
 import * as FileSystem from 'expo-file-system'
 import { Image as ExpoImage } from 'expo-image'
 import * as MediaLibrary from 'expo-media-library'
@@ -107,6 +108,37 @@ function fromByteArrayBase64(bytes) {
     result += i + 2 < len ? B64_CHARS[b2 & 63] : '='
   }
   return result
+}
+
+// Índice reverso char->valor para decodificar base64.
+const B64_LOOKUP = (() => {
+  const t = new Int16Array(256).fill(-1)
+  for (let i = 0; i < B64_CHARS.length; i++) t[B64_CHARS.charCodeAt(i)] = i
+  return t
+})()
+
+// Converte uma string base64 em Uint8Array (inversa de fromByteArrayBase64).
+function toByteArrayBase64(b64) {
+  // Remove qualquer whitespace/quebra.
+  const clean = b64.replace(/[^A-Za-z0-9+/=]/g, '')
+  let len = clean.length
+  let pad = 0
+  if (len && clean[len - 1] === '=') pad++
+  if (len > 1 && clean[len - 2] === '=') pad++
+  const outLen = ((len * 3) >> 2) - pad
+  const out = new Uint8Array(outLen)
+  let o = 0
+  for (let i = 0; i < len; i += 4) {
+    const c0 = B64_LOOKUP[clean.charCodeAt(i)]
+    const c1 = B64_LOOKUP[clean.charCodeAt(i + 1)]
+    const c2 = B64_LOOKUP[clean.charCodeAt(i + 2)]
+    const c3 = B64_LOOKUP[clean.charCodeAt(i + 3)]
+    const n = (c0 << 18) | (c1 << 12) | ((c2 & 63) << 6) | (c3 & 63)
+    if (o < outLen) out[o++] = (n >> 16) & 0xff
+    if (o < outLen) out[o++] = (n >> 8) & 0xff
+    if (o < outLen) out[o++] = n & 0xff
+  }
+  return out
 }
 
 async function persistItemCache(nextItems) {
@@ -855,11 +887,10 @@ export default function App() {
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
 
-      // As thumbnails NÃO são mais pré-baixadas em massa: a galeria usa expo-image,
-      // que carrega cada thumb da URL sob demanda e a cacheia em disco (memory-disk)
-      // automaticamente ao rolar. Isso deixa o app instantâneo (mostra o cache
-      // local na hora) e o sync leve (só a lista). Para offline total opcional,
-      // usar a ação manual "Baixar thumbnails" em Configurações.
+      // O sync é SÓ a lista (diferença incremental via since/keyset). As
+      // thumbnails vêm por expo-image (carrega da URL sob demanda e cacheia em
+      // disco ao rolar) OU, para offline total, importando o pacote .zip em
+      // Configurações > Biblioteca > "Importar pacote offline".
       loadAlbums(activeToken, activeBaseUrl)
     } catch (error) {
       if (error.code === 'BACKGROUND') {
@@ -901,157 +932,82 @@ export default function App() {
     return null
   }
 
-  // Consulta ao servidor QUAIS ids (dentre os enviados) já têm thumb em cache.
-  // Retorna um array de ids, ou null se a consulta falhar.
-  async function fetchThumbsHave(ids, activeToken = token, activeBaseUrl = baseUrl) {
-    if (!ids.length) return []
-    const url = apiUrl(activeBaseUrl, `/media/thumbnails/have?size=300`)
-    try {
-      const response = await fetchWithTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: { ...authHeaders(activeToken), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids }),
-        },
-        20000,
-      )
-      if (!response.ok) return null
-      const data = await response.json()
-      return Array.isArray(data.have) ? data.have : []
-    } catch (_) {
-      return null
-    }
-  }
-
-  // Baixa um LOTE de thumbnails num único zip, descompacta e grava em thumbs/.
-  // Retorna um Set com os ids que foram efetivamente salvos.
-  async function downloadThumbBatch(ids, activeToken = token, activeBaseUrl = baseUrl) {
-    const saved = new Set()
-    if (!ids.length) return saved
-
-    // Só pede ao servidor os que ainda não estão no disco (retomável/idempotente).
-    const missing = []
-    for (const id of ids) {
-      const p = `${THUMB_DIR}${id}.jpg`
-      try {
-        const info = await FileSystem.getInfoAsync(p)
-        if (info.exists && info.size > 0) { saved.add(id); continue }
-      } catch (_) {}
-      missing.push(id)
-    }
-    if (!missing.length) return saved
-
-    const url = apiUrl(activeBaseUrl, `/media/thumbnails/zip?size=300`)
-    let bytes
-    try {
-      const response = await fetchWithTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: { ...authHeaders(activeToken), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: missing }),
-        },
-        60000,
-      )
-      if (!response.ok) return saved
-      const buffer = await response.arrayBuffer()
-      bytes = new Uint8Array(buffer)
-    } catch (_) {
-      return saved
-    }
-
-    let entries
-    try {
-      entries = unzipSync(bytes)
-    } catch (_) {
-      return saved
-    }
-
-    for (const name of Object.keys(entries)) {
-      const id = parseInt(name.replace(/\.jpg$/i, ''), 10)
-      if (!Number.isFinite(id)) continue
-      try {
-        const b64 = fromByteArrayBase64(entries[name])
-        await FileSystem.writeAsStringAsync(`${THUMB_DIR}${id}.jpg`, b64, {
-          encoding: FileSystem.EncodingType.Base64,
-        })
-        saved.add(id)
-      } catch (_) {}
-    }
-    return saved
-  }
-
-  function cancelDownloadAllThumbs() {
-    offlineThumbsRef.current = false
-    setOfflineThumbs(false)
-    setOfflineStatus('Download offline cancelado')
-  }
-
-  // Ação MANUAL: baixa para o disco as thumbnails de toda a biblioteca (offline
-  // total). Diferente do sync (que só traz a lista), isto percorre os itens em
-  // lotes, pergunta ao servidor quais têm thumb em cache (/thumbnails/have) e
-  // baixa só esses via zip. Retomável e cancelável.
-  async function downloadAllThumbsOffline(activeToken = token, activeBaseUrl = baseUrl) {
+  // Importa um PACOTE OFFLINE (.zip gerado por backend/build_thumb_pack.py):
+  // extrai cada {id}.jpg para THUMB_DIR e marca local_thumbnail_uri nos itens,
+  // deixando a galeria funcionar sem rede. Escolhido via document picker
+  // (pendrive / Downloads). Rápido: lê o zip do disco e grava direto.
+  async function importOfflinePack() {
     if (offlineThumbsRef.current) return
-    if (!activeToken) return
-    await ensureDirectories()
-
-    const all = itemsRef.current || []
-    const candidates = all.filter((it) => !it.thumbnail_failed)
-    if (!candidates.length) {
-      setOfflineStatus('Nada para baixar')
-      return
-    }
-
-    offlineThumbsRef.current = true
-    setOfflineThumbs(true)
-    setOfflineStatus(`Preparando download offline…`)
-
     try {
-      // 1) Descobre quais têm thumb em cache no servidor.
-      const HAVE_BATCH = 1000
-      const available = []
-      for (let start = 0; start < candidates.length; start += HAVE_BATCH) {
-        if (!offlineThumbsRef.current) return
-        const slice = candidates.slice(start, start + HAVE_BATCH)
-        const have = await fetchThumbsHave(slice.map((it) => it.id), activeToken, activeBaseUrl)
-        if (have && have.length) {
-          const haveSet = new Set(have)
-          for (const it of slice) if (haveSet.has(it.id)) available.push(it)
-        }
-        setOfflineStatus(`Verificando no servidor… ${Math.min(start + HAVE_BATCH, candidates.length)}/${candidates.length}`)
-      }
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ['application/zip', 'application/octet-stream', '*/*'],
+        copyToCacheDirectory: true,
+        multiple: false,
+      })
+      if (picked.canceled || !picked.assets || !picked.assets.length) return
+      const asset = picked.assets[0]
 
-      if (!available.length) {
-        setOfflineStatus('Nenhuma thumbnail disponível no servidor ainda')
+      offlineThumbsRef.current = true
+      setOfflineThumbs(true)
+      setOfflineStatus('Lendo pacote…')
+      await ensureDirectories()
+
+      // Lê o zip (base64 -> bytes) e descompacta.
+      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      })
+      const bytes = toByteArrayBase64(b64)
+      let entries
+      try {
+        entries = unzipSync(bytes)
+      } catch (_) {
+        setOfflineStatus('Pacote inválido (não é um zip válido)')
         return
       }
 
-      // 2) Baixa em lotes as que ainda não estão no disco e marca o URI local
-      //    no item (para a galeria exibir do disco, sem rede).
-      const BATCH = 500
-      let done = 0
-      for (let start = 0; start < available.length; start += BATCH) {
-        if (!offlineThumbsRef.current) return
-        const batch = available.slice(start, start + BATCH)
-        const saved = await downloadThumbBatch(batch.map((it) => it.id), activeToken, activeBaseUrl)
-        if (saved.size) {
-          setItems((current) => {
-            const next = current.map((it) =>
-              saved.has(it.id) ? { ...it, local_thumbnail_uri: thumbPath(it), thumbnail_failed: false } : it
-            )
-            persistItemCache(next).catch(() => {})
-            return next
-          })
-        }
-        done += batch.length
-        setOfflineStatus(`Baixando offline… ${Math.min(done, available.length)}/${available.length}`)
+      // Descobre os ids presentes (ignora manifest.json).
+      const names = Object.keys(entries).filter((n) => /\.jpg$/i.test(n))
+      const total = names.length
+      if (!total) {
+        setOfflineStatus('Pacote sem thumbnails')
+        return
       }
 
-      setOfflineStatus(`Offline pronto: ${available.length} thumbnails`)
+      // Grava cada thumb no disco; coleciona ids salvos.
+      const savedIds = new Set()
+      let done = 0
+      for (const name of names) {
+        const id = parseInt(name.replace(/\.jpg$/i, ''), 10)
+        if (Number.isFinite(id)) {
+          try {
+            const jpgB64 = fromByteArrayBase64(entries[name])
+            await FileSystem.writeAsStringAsync(`${THUMB_DIR}${id}.jpg`, jpgB64, {
+              encoding: FileSystem.EncodingType.Base64,
+            })
+            savedIds.add(id)
+          } catch (_) {}
+        }
+        done++
+        if (done % 500 === 0 || done === total) {
+          setOfflineStatus(`Importando… ${done}/${total}`)
+          await new Promise((r) => setTimeout(r, 0)) // deixa a UI respirar
+        }
+      }
+
+      // Marca local_thumbnail_uri nos itens correspondentes.
+      if (savedIds.size) {
+        setItems((current) => {
+          const next = current.map((it) =>
+            savedIds.has(it.id) ? { ...it, local_thumbnail_uri: thumbPath(it), thumbnail_failed: false } : it
+          )
+          persistItemCache(next).catch(() => {})
+          return next
+        })
+      }
+
+      setOfflineStatus(`Pacote importado: ${savedIds.size} thumbnails`)
     } catch (_) {
-      setOfflineStatus('Download offline interrompido — toque para tentar de novo')
+      setOfflineStatus('Falha ao importar pacote')
     } finally {
       offlineThumbsRef.current = false
       setOfflineThumbs(false)
@@ -1861,9 +1817,9 @@ export default function App() {
                   <Text style={styles.rowItemHint}>↻</Text>
                 </Pressable>
                 <View style={styles.rowDivider} />
-                <Pressable style={styles.rowItem} onPress={() => offlineThumbsRef.current ? cancelDownloadAllThumbs() : downloadAllThumbsOffline()} disabled={syncing}>
-                  <Text style={styles.rowItemText}>{offlineThumbs ? 'Cancelar download offline' : 'Baixar tudo offline'}</Text>
-                  <Text style={styles.rowItemHint}>{offlineThumbs ? '✕' : '⬇'}</Text>
+                <Pressable style={styles.rowItem} onPress={importOfflinePack} disabled={offlineThumbs}>
+                  <Text style={styles.rowItemText}>{offlineThumbs ? 'Importando pacote…' : 'Importar pacote offline'}</Text>
+                  <Text style={styles.rowItemHint}>📦</Text>
                 </Pressable>
                 <View style={styles.rowDivider} />
                 <Pressable style={styles.rowItem} onPress={confirmClearOfflineFiles}>

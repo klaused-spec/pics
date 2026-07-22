@@ -78,6 +78,7 @@ function Layout() {
             <div className="text-xs">
               <p className="text-gray-400">Logado como:</p>
               <p className="text-blue-300 font-semibold truncate">{userEmail}</p>
+              <p className="text-gray-500 mt-1">v{__APP_VERSION__}</p>
             </div>
           )}
           <button
