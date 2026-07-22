@@ -20,17 +20,16 @@ import {
   Image,
   Modal,
   PanResponder,
-  Platform,
   Pressable,
-  SafeAreaView,
-  StatusBar as RNStatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native'
-
-const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? RNStatusBar.currentHeight || 24 : 0
+// SDK 54 / RN 0.81 ativou edge-to-edge por padrão no Android: o app desenha por
+// baixo das barras do sistema. Usamos o safe-area-context para respeitar os
+// insets (topo e, principalmente, a barra de navegação inferior).
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const SETTINGS_KEY = 'pics_mobile_settings'
 const ITEMS_KEY = 'pics_mobile_items'
@@ -429,6 +428,15 @@ async function saveItemToGalleryFile(tempUri, item) {
 }
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppInner />
+    </SafeAreaProvider>
+  )
+}
+
+function AppInner() {
+  const insets = useSafeAreaInsets()
   const [baseUrl, setBaseUrl] = useState('https://pics.meulavoro.com.br:8443')
   const [email, setEmail] = useState('klaused@gmail.com')
   const [password, setPassword] = useState('')
@@ -1011,7 +1019,7 @@ export default function App() {
             } catch (_) {}
             pendingWrites--
             done++
-            if (done % 200 === 0) {
+            if (done % 500 === 0) {
               setOfflineStatus(`Importando… ${done}`)
               await new Promise((r) => setTimeout(r, 0)) // deixa a UI respirar
             }
@@ -1930,7 +1938,7 @@ export default function App() {
         />
       )}
 
-      <View style={styles.tabBar}>
+      <View style={[styles.tabBar, { height: 62 + insets.bottom, paddingBottom: insets.bottom }]}>
         {[
           ['photos', 'Fotos', '🖼️'],
           ['search', 'Buscar', '🔍'],
@@ -2037,7 +2045,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fa', paddingTop: STATUS_BAR_HEIGHT },
+  screen: { flex: 1, backgroundColor: '#f5f7fa' },
   tabContent: { flex: 1 },
 
   // Login
