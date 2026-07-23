@@ -1227,6 +1227,8 @@ function AppInner() {
         const merged = importedItems.map((it) => ({
           ...it,
           thumbnail_url: `${base}/api/media/${it.id}/thumbnail?size=300`,
+          file_url: `${base}/api/media/${it.id}/file`,
+          stream_url: it.media_type === 'video' ? `${base}/api/media/${it.id}/stream` : null,
           local_thumbnail_uri: savedIds.has(it.id) ? thumbPath(it) : it.local_thumbnail_uri || null,
           thumbnail_failed: false,
         }))
@@ -1352,7 +1354,12 @@ function AppInner() {
       return existing.uri
     }
     const temp = `${FileSystem.cacheDirectory}dl_${item.id}${extensionFromContent(item)}`
-    const url = item.media_type === 'video' ? item.stream_url || item.file_url : item.file_url
+    // file_url/stream_url podem ser null em itens importados de zip antigo;
+    // reconstrói a URL a partir do baseUrl nesse caso.
+    const base = normalizeBaseUrl(baseUrl)
+    const fileUrl = item.file_url || `${base}/api/media/${item.id}/file`
+    const streamUrl = item.stream_url || `${base}/api/media/${item.id}/stream`
+    const url = item.media_type === 'video' ? streamUrl : fileUrl
     await downloadWithAuth(url, temp, token, onProgress)
     try {
       const saved = await saveItemToGalleryFile(temp, item)
