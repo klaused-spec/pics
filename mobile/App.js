@@ -562,6 +562,7 @@ function AppInner() {
   const dateHeaderHeightRef = useRef(36)
   const scrubbingRef = useRef(false)
   const viewerItemsRef = useRef([])
+  const selectedRef = useRef(null)
   // Zoom/pan do viewer
   const viewerScale = useRef(new Animated.Value(1)).current
   const viewerTranslateX = useRef(new Animated.Value(0)).current
@@ -1353,8 +1354,9 @@ function AppInner() {
 
   function navigateViewer(direction) {
     const list = viewerItemsRef.current
-    if (!list.length || !selected) return
-    const idx = list.findIndex((i) => i.id === selected.id)
+    const cur = selectedRef.current
+    if (!list.length || !cur) return
+    const idx = list.findIndex((i) => i.id === cur.id)
     const next = list[idx + direction]
     if (next) { resetViewerZoom(); openItem(next) }
   }
@@ -1403,7 +1405,7 @@ function AppInner() {
         z.pinchStart = null
         // Salva posição final do pan
         if (z.scale > 1.05) {
-          z.tx = z.tx + (z.lastDx || 0) - (z.lastDx || 0)
+          // tx/ty já foram atualizados incrementalmente no onMove; só limpa deltas
           z.lastDx = 0; z.lastDy = 0
           // Snap de volta se foi muito longe
           const limit = 200 * (z.scale - 1)
@@ -1425,6 +1427,7 @@ function AppInner() {
 
   async function openItem(item) {
     setSelected(item)
+    selectedRef.current = item
     setFullUri(null)
     setFullProgress(0)
     setFullLoading(true)
@@ -1443,6 +1446,7 @@ function AppInner() {
           const base = normalizeBaseUrl(baseUrl)
           const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
           setFullUri(`${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`)
+          setFullLoading(false)
         }
       } else {
         // Imagens: procura na galeria offline primeiro, senão baixa o full.
@@ -1463,6 +1467,7 @@ function AppInner() {
         Alert.alert('Arquivo full', error.message)
       }
       setSelected(null)
+      selectedRef.current = null
     } finally {
       setFullLoading(false)
     }
@@ -2316,7 +2321,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.0</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.1</Text>
             </View>
           )}
         />
@@ -2363,8 +2368,10 @@ function AppInner() {
               />
             </View>
           )}
-          {!fullLoading && fullUri && selected?.media_type === 'video' && (
-            <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
+          {(fullUri || !fullLoading) && fullUri && selected?.media_type === 'video' && (
+            <View style={styles.fullImage} {...viewerPanResponder.panHandlers}>
+              <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
+            </View>
           )}
         </SafeAreaView>
       </Modal>
