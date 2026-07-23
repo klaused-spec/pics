@@ -2316,7 +2316,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.2.0</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.0</Text>
             </View>
           )}
         />
