@@ -1109,6 +1109,7 @@ function AppInner() {
       // em vez de manter o zip inteiro + todas as entradas descomprimidas na RAM.
       const savedIds = new Set()
       let done = 0
+      let importedItems = null // lista de metadados vinda do items.json, se existir
 
       // Coleta o conteúdo de cada arquivo (chega em pedaços) e, ao fim do
       // arquivo, grava no disco. Serializa as gravações numa fila para não
@@ -1120,6 +1121,24 @@ function AppInner() {
       unzipper.register(UnzipInflate) // suporta tanto ZIP_STORED quanto DEFLATE
 
       unzipper.onfile = (file) => {
+        // items.json: metadados de toda a biblioteca — carrega como cache de itens.
+        if (file.name === 'items.json') {
+          const chunks = []
+          file.ondata = (err, chunk, final) => {
+            if (err) return
+            if (chunk && chunk.length) chunks.push(chunk)
+            if (!final) return
+            try {
+              const bytes = chunks.length === 1 ? chunks[0] : concatUint8(chunks)
+              const text = new TextDecoder().decode(bytes)
+              const parsed = JSON.parse(text)
+              if (Array.isArray(parsed) && parsed.length) importedItems = parsed
+            } catch (_) {}
+          }
+          file.start()
+          return
+        }
+
         const m = /^(\d+)\.jpg$/i.exec(file.name)
         if (!m) {
           // manifest.json ou nome inesperado: descarta sem acumular dados.
@@ -1195,13 +1214,29 @@ function AppInner() {
       // Garante que todas as gravações enfileiradas terminaram.
       await writeChain
 
-      if (!savedIds.size) {
+      if (!savedIds.size && !importedItems) {
         setOfflineStatus('Pacote sem thumbnails')
         return
       }
 
-      // Marca local_thumbnail_uri nos itens correspondentes.
-      if (savedIds.size) {
+      if (importedItems && importedItems.length) {
+        // Pacote inclui items.json: reconstrói a galeria completa sem sync.
+        // Preenche thumbnail_url com baseUrl atual e marca local_thumbnail_uri
+        // para os IDs cujos thumbs foram extraídos agora.
+        const base = normalizeBaseUrl(baseUrl)
+        const merged = importedItems.map((it) => ({
+          ...it,
+          thumbnail_url: `${base}/api/media/${it.id}/thumbnail?size=300`,
+          local_thumbnail_uri: savedIds.has(it.id) ? thumbPath(it) : it.local_thumbnail_uri || null,
+          thumbnail_failed: false,
+        }))
+        // Ordena por data decrescente (mesmo critério do sync).
+        merged.sort((a, b) => (b.date_taken || '').localeCompare(a.date_taken || ''))
+        setItems(merged)
+        persistItemCache(merged).catch(() => {})
+        setOfflineStatus(`Pacote importado: ${merged.length} itens · ${savedIds.size} thumbnails`)
+      } else {
+        // Pacote antigo (só thumbs): apenas marca local_thumbnail_uri nos itens já conhecidos.
         setItems((current) => {
           const next = current.map((it) =>
             savedIds.has(it.id) ? { ...it, local_thumbnail_uri: thumbPath(it), thumbnail_failed: false } : it
@@ -1209,9 +1244,8 @@ function AppInner() {
           persistItemCache(next).catch(() => {})
           return next
         })
+        setOfflineStatus(`Pacote importado: ${savedIds.size} thumbnails`)
       }
-
-      setOfflineStatus(`Pacote importado: ${savedIds.size} thumbnails`)
     } catch (err) {
       setOfflineStatus(`Falha ao importar pacote: ${err?.message || err}`)
     } finally {
