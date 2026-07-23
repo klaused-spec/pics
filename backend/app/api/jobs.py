@@ -276,53 +276,47 @@ def reboot_server(
 def restart_app(
     current_user: dict = Depends(get_current_user),
 ):
-    """Mata uvicorn e Caddy e relança start.bat (reinicia só a aplicação, sem reboot do PC)."""
+    """Reinicia backend + Caddy sem reboot do PC.
+
+    Estratégia Windows: lança um processo PowerShell filho ANTES de matar o
+    Python. O filho dorme 3s (garante que a resposta HTTP chegou ao cliente),
+    mata python.exe + caddy.exe e sobe restart-app.bat numa nova janela cmd.
+    Como o PowerShell é iniciado com CREATE_NEW_PROCESS_GROUP e DETACHED, ele
+    sobrevive ao taskkill do pai sem precisar de Agendador de Tarefas.
+    """
     import subprocess
     import threading
     import sys
     import os
 
     def do_restart():
-        import time
-        time.sleep(1)  # dá tempo para a resposta HTTP chegar ao cliente
+        root = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+        )
         if sys.platform == "win32":
-            # Mata processos existentes silenciosamente
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "python.exe", "/T"],
-                check=False, capture_output=True,
+            restart_bat = os.path.join(root, "restart-app.bat")
+            # Script inline: dorme 3s, mata processos, sobe o bat numa nova janela.
+            ps_script = (
+                "Start-Sleep -Seconds 3; "
+                "Get-Process -Name python,caddy -ErrorAction SilentlyContinue | Stop-Process -Force; "
+                "Start-Sleep -Seconds 1; "
+                f"Start-Process cmd -ArgumentList '/k \"{restart_bat}\"' -WindowStyle Normal"
             )
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "uvicorn.exe", "/T"],
-                check=False, capture_output=True,
-            )
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "caddy.exe", "/T"],
-                check=False, capture_output=True,
-            )
-            # Relança start.bat em nova janela independente
-            root = os.path.normpath(
-                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-            )
-            start_bat = os.path.join(root, "start.bat")
+            # DETACHED_PROCESS (0x00000008) + CREATE_NEW_PROCESS_GROUP (0x00000200)
+            # fazem o filho sobreviver ao kill do pai.
+            DETACHED = 0x00000008 | 0x00000200
             subprocess.Popen(
-                ["cmd", "/c", "start", "", start_bat],
-                cwd=root,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+                creationflags=DETACHED,
                 close_fds=True,
             )
         else:
-            # Linux/WSL: mata uvicorn e caddy e relança start.sh
-            subprocess.run(["pkill", "-f", "uvicorn"], check=False)
-            subprocess.run(["pkill", "-f", "caddy"], check=False)
-            root = os.path.normpath(
-                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-            )
-            start_sh = os.path.join(root, "start.sh")
+            restart_sh = os.path.join(root, "restart-app.sh")
             subprocess.Popen(
-                ["bash", start_sh],
-                cwd=root,
+                ["bash", "-c", f"sleep 3 && bash '{restart_sh}'"],
                 start_new_session=True,
+                close_fds=True,
             )
 
     threading.Thread(target=do_restart, daemon=True).start()
-    return {"message": "Reinicialização da aplicação iniciada. O sistema ficará offline por alguns segundos."}
+    return {"message": "Reinicialização agendada. Backend e Caddy voltam em ~15 segundos."}
