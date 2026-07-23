@@ -1361,71 +1361,90 @@ function AppInner() {
     if (next) { resetViewerZoom(); openItem(next) }
   }
 
-  const viewerPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: (_evt) => (_evt.nativeEvent.touches?.length || 1) >= 2,
-      onMoveShouldSetPanResponder: (_evt, gs) => {
-        if (gs.numberActiveTouches >= 2) return true
-        const z = viewerZoomRef.current
-        return z.scale > 1.05
-          ? true
-          : Math.abs(gs.dx) > 10 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5
-      },
-      onMoveShouldSetPanResponderCapture: (_evt, gs) => gs.numberActiveTouches >= 2,
-      onPanResponderGrant: (_evt) => {
-        // Duplo tap → reset zoom
-        const now = Date.now()
-        const z = viewerZoomRef.current
-        if (now - z.lastTap < 300) { resetViewerZoom(); z.lastTap = 0; return }
-        z.lastTap = now
-      },
-      onPanResponderMove: (_evt, gs) => {
-        const z = viewerZoomRef.current
-        const numTouches = gs.numberActiveTouches
-        const touches = _evt.nativeEvent.touches
-        if (numTouches >= 2 && touches && touches.length >= 2) {
-          // Pinch zoom: calcula distância entre os dois dedos
-          const t0 = touches[0]; const t1 = touches[1]
-          const dist = Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY)
-          if (!z.pinchStart) { z.pinchStart = dist; z.pinchScaleStart = z.scale; return }
-          const newScale = Math.max(1, Math.min(5, z.pinchScaleStart * (dist / z.pinchStart)))
-          z.scale = newScale
-          viewerScale.setValue(newScale)
-        } else if (numTouches === 1 && z.scale > 1.05) {
-          // Pan com zoom ativo
-          const newTx = z.tx + gs.dx - (z.lastDx || 0)
-          const newTy = z.ty + gs.dy - (z.lastDy || 0)
-          z.tx = newTx; z.ty = newTy
-          z.lastDx = gs.dx; z.lastDy = gs.dy
-          viewerTranslateX.setValue(newTx)
-          viewerTranslateY.setValue(newTy)
+  // Touch handlers diretos (mais confiáveis que PanResponder para pinch no Android)
+  const touchStartRef = useRef({}) // id -> {x, y}
+  const swipeStartRef = useRef(null) // {x, y} quando 1 dedo
+
+  function handleTouchStart(evt) {
+    const touches = evt.nativeEvent.touches
+    for (const t of touches) touchStartRef.current[t.identifier] = { x: t.pageX, y: t.pageY }
+    if (touches.length === 1) {
+      swipeStartRef.current = { x: touches[0].pageX, y: touches[0].pageY }
+      // Duplo tap
+      const now = Date.now()
+      const z = viewerZoomRef.current
+      if (now - z.lastTap < 300) { resetViewerZoom(); z.lastTap = 0 }
+      else z.lastTap = now
+    }
+    if (touches.length >= 2) {
+      swipeStartRef.current = null
+      const z = viewerZoomRef.current
+      const t0 = touches[0]; const t1 = touches[1]
+      z.pinchStart = Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY)
+      z.pinchScaleStart = z.scale
+      z.lastDx = 0; z.lastDy = 0
+    }
+  }
+
+  function handleTouchMove(evt) {
+    const touches = evt.nativeEvent.touches
+    const z = viewerZoomRef.current
+    if (touches.length >= 2) {
+      // Pinch zoom
+      const t0 = touches[0]; const t1 = touches[1]
+      const dist = Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY)
+      if (!z.pinchStart) { z.pinchStart = dist; z.pinchScaleStart = z.scale; return }
+      const newScale = Math.max(1, Math.min(5, z.pinchScaleStart * (dist / z.pinchStart)))
+      z.scale = newScale
+      viewerScale.setValue(newScale)
+    } else if (touches.length === 1 && z.scale > 1.05) {
+      // Pan com zoom ativo
+      const t = touches[0]
+      const start = touchStartRef.current[t.identifier]
+      if (!start) return
+      const dx = t.pageX - start.x
+      const dy = t.pageY - start.y
+      const newTx = z.tx + dx - (z.lastDx || 0)
+      const newTy = z.ty + dy - (z.lastDy || 0)
+      z.tx = newTx; z.ty = newTy
+      z.lastDx = dx; z.lastDy = dy
+      viewerTranslateX.setValue(newTx)
+      viewerTranslateY.setValue(newTy)
+    }
+  }
+
+  function handleTouchEnd(evt) {
+    const z = viewerZoomRef.current
+    const remaining = evt.nativeEvent.touches.length
+    if (remaining === 0) {
+      z.pinchStart = null
+      z.lastDx = 0; z.lastDy = 0
+      touchStartRef.current = {}
+      if (z.scale > 1.05) {
+        // Snap se foi longe demais
+        const limit = 200 * (z.scale - 1)
+        const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
+        const clampedTy = Math.max(-limit, Math.min(limit, z.ty))
+        z.tx = clampedTx; z.ty = clampedTy
+        Animated.parallel([
+          Animated.spring(viewerTranslateX, { toValue: clampedTx, useNativeDriver: true }),
+          Animated.spring(viewerTranslateY, { toValue: clampedTy, useNativeDriver: true }),
+        ]).start()
+      } else if (swipeStartRef.current) {
+        // Swipe para navegar (só sem zoom)
+        const dx = evt.nativeEvent.changedTouches[0]?.pageX - swipeStartRef.current.x
+        const dy = evt.nativeEvent.changedTouches[0]?.pageY - swipeStartRef.current.y
+        if (Math.abs(dx) > 60 && Math.abs(dy) < 80) {
+          if (dx < 0) navigateViewer(1)
+          else navigateViewer(-1)
         }
-      },
-      onPanResponderRelease: (_evt, gs) => {
-        const z = viewerZoomRef.current
-        z.pinchStart = null
-        z.lastDx = 0; z.lastDy = 0
-        if (z.scale > 1.05) {
-          // Snap de volta se foi muito longe
-          const limit = 200 * (z.scale - 1)
-          const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
-          const clampedTy = Math.max(-limit, Math.min(limit, z.ty))
-          z.tx = clampedTx; z.ty = clampedTy
-          Animated.parallel([
-            Animated.spring(viewerTranslateX, { toValue: clampedTx, useNativeDriver: true }),
-            Animated.spring(viewerTranslateY, { toValue: clampedTy, useNativeDriver: true }),
-          ]).start()
-          return
-        }
-        // Swipe lateral para mudar foto (só sem zoom)
-        if (gs.numberActiveTouches === 0) {
-          if (gs.dx < -60 && Math.abs(gs.dy) < 80) navigateViewer(1)
-          else if (gs.dx > 60 && Math.abs(gs.dy) < 80) navigateViewer(-1)
-        }
-      },
-    })
-  ).current
+        swipeStartRef.current = null
+      }
+    }
+  }
+
+  // PanResponder vazio — mantido apenas para compatibilidade com código existente
+  const viewerPanResponder = useRef({ panHandlers: {} }).current
 
   async function openItem(item) {
     setSelected(item)
@@ -2314,7 +2333,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.2</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.3</Text>
             </View>
           )}
         />
@@ -2353,7 +2372,12 @@ function AppInner() {
             </View>
           )}
           {!fullLoading && fullUri && selected?.media_type === 'image' && (
-            <View style={styles.fullImage} {...viewerPanResponder.panHandlers}>
+            <View
+              style={styles.fullImage}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+            >
               <Animated.Image
                 source={{ uri: fullUri }}
                 style={[styles.fullImage, { transform: [{ scale: viewerScale }, { translateX: viewerTranslateX }, { translateY: viewerTranslateY }] }]}
@@ -2361,10 +2385,8 @@ function AppInner() {
               />
             </View>
           )}
-          {(fullUri || !fullLoading) && fullUri && selected?.media_type === 'video' && (
-            <View style={styles.fullImage} {...viewerPanResponder.panHandlers}>
-              <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
-            </View>
+          {!fullLoading && fullUri && selected?.media_type === 'video' && (
+            <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
           )}
         </SafeAreaView>
       </Modal>
