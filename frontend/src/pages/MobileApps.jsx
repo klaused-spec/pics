@@ -77,6 +77,9 @@ function MobileApps() {
               <div key={apk.filename} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-white font-semibold truncate">{apk.filename}</p>
+                  {apk.version && (
+                    <p className="text-xs font-mono text-blue-400 mt-0.5">v{apk.version}</p>
+                  )}
                   <p className="text-sm text-gray-400 mt-1">
                     {formatBytes(apk.size)} • {formatDate(apk.modified_at)}
                   </p>
