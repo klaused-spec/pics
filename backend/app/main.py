@@ -51,61 +51,61 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
-    # Agenda scan periódico
-    scheduler.add_job(
-        run_scan_and_organize,
-        "interval",
-        minutes=settings.scan_interval_minutes,
-        id="scan_organize",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_ai_processing,
-        "interval",
-        minutes=settings.scan_interval_minutes + 5,
-        id="ai_process",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_face_detection,
-        "interval",
-        minutes=settings.scan_interval_minutes + 10,
-        id="face_detect",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_sync,
-        "interval",
-        minutes=3,
-        id="sync_files",
-        replace_existing=True,
-    )
-    # Pré-gera thumbnails em background para que o app mobile encontre thumb
-    # pronto no cache (o sync do app baixa SÓ o que já existe; o warmup vai
-    # preenchendo o resto no ritmo do servidor). Roda logo após o scan.
-    scheduler.add_job(
-        run_thumbnail_warmup,
-        "interval",
-        minutes=settings.scan_interval_minutes + 2,
-        id="thumbnail_warmup",
-        replace_existing=True,
-        next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=30),
-    )
-    if settings.rclone_enabled:
+    if settings.scheduler_enabled:
         scheduler.add_job(
-            run_rclone_download_job,
+            run_scan_and_organize,
             "interval",
-            minutes=settings.rclone_interval_minutes,
-            id="rclone_download",
+            minutes=settings.scan_interval_minutes,
+            id="scan_organize",
             replace_existing=True,
         )
-    scheduler.start()
-    logger.info("Scheduler iniciado")
+        scheduler.add_job(
+            run_ai_processing,
+            "interval",
+            minutes=settings.scan_interval_minutes + 5,
+            id="ai_process",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_face_detection,
+            "interval",
+            minutes=settings.scan_interval_minutes + 10,
+            id="face_detect",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_sync,
+            "interval",
+            minutes=3,
+            id="sync_files",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_thumbnail_warmup,
+            "interval",
+            minutes=settings.scan_interval_minutes + 2,
+            id="thumbnail_warmup",
+            replace_existing=True,
+            next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=30),
+        )
+        if settings.rclone_enabled:
+            scheduler.add_job(
+                run_rclone_download_job,
+                "interval",
+                minutes=settings.rclone_interval_minutes,
+                id="rclone_download",
+                replace_existing=True,
+            )
+        scheduler.start()
+        logger.info("Scheduler iniciado")
+    else:
+        logger.info("Scheduler automatico desabilitado por configuracao")
 
     yield
 
     # Shutdown
-    scheduler.shutdown()
+    if settings.scheduler_enabled:
+        scheduler.shutdown()
     logger.info("PICS encerrado")
 
 

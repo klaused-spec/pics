@@ -10,7 +10,7 @@ Fluxo pretendido:
 O pacote contém:
   - {id}.jpg  para cada thumbnail disponível (nome = id da mídia, batendo com
     THUMB_DIR/{id}.jpg do app).
-  - manifest.json  com {version, size, count, ids:[...]}.
+    - manifest.json  com metadados leves {version, size, count, created_at}.
 
 Uso:
   python build_thumb_pack.py [--out CAMINHO.zip] [--size 300] [--all]
@@ -129,7 +129,6 @@ def main() -> None:
             "size": args.size,
             "count": len(included),
             "created_at": int(time.time()),
-            "ids": included,
         }
         zf.writestr("manifest.json", json.dumps(manifest))
 

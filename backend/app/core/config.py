@@ -101,6 +101,7 @@ class Settings(BaseSettings):
     batch_size: int = 10
     max_concurrent_ai_calls: int = 3
     scan_interval_minutes: int = 30
+    scheduler_enabled: bool = False
     scan_workers: int = 4  # Número de threads paralelas para scan (SHA256, metadados, pHash)
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"

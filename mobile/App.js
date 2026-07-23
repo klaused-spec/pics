@@ -8,7 +8,7 @@ import { Image as ExpoImage } from 'expo-image'
 import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
 import { Unzip, UnzipInflate } from 'fflate'
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -41,6 +41,8 @@ const ITEMS_FILE = `${FileSystem.documentDirectory}items.json`
 const DEFAULT_SLIDE_SECONDS = 5
 const SCRUB_THUMB = 44
 const GALLERY_ALBUM = 'Pics'
+const GRID_COLUMNS = 3
+const TILE_GAP = 4
 
 function normalizeBaseUrl(value) {
   const trimmed = value.trim()
@@ -218,6 +220,48 @@ function fullPath(item) {
   const version = item.sha256_hash || item.updated_at || 'current'
   return `${FULL_DIR}${item.id}_${encodeURIComponent(version)}${extensionFromContent(item)}`
 }
+
+const MemoTile = memo(function MemoTile({
+  item,
+  isSelected,
+  isOffline,
+  selectMode,
+  onPress,
+  onLongPress,
+  onThumbError,
+  source,
+}) {
+  return (
+    <Pressable style={styles.tile} onPress={onPress} onLongPress={onLongPress} delayLongPress={250}>
+      {item.thumbnail_failed ? (
+        <View style={[styles.thumb, styles.thumbMissing]}>
+          <Text style={styles.thumbMissingText}>SEM THUMB</Text>
+        </View>
+      ) : (
+        <ExpoImage
+          source={source}
+          style={styles.thumb}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          recyclingKey={String(item.id)}
+          transition={0}
+          onError={onThumbError}
+        />
+      )}
+      {isOffline && <Text style={styles.offlineBadge}>OFFLINE</Text>}
+      {item.media_type === 'video' && (
+        <View style={styles.videoBadge}>
+          <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
+        </View>
+      )}
+      {selectMode && (
+        <View style={[styles.selectMark, isSelected && styles.selectMarkActive]}>
+          <Text style={styles.selectMarkText}>{isSelected ? '✓' : ''}</Text>
+        </View>
+      )}
+    </Pressable>
+  )
+})
 
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
@@ -456,6 +500,7 @@ function AppInner() {
   const [mediaFilter, setMediaFilter] = useState('all')
   const [offlineOnly, setOfflineOnly] = useState(false)
   const [cachedFullIds, setCachedFullIds] = useState(new Set())
+  const [hasPendingSync, setHasPendingSync] = useState(false)
   const [activeTab, setActiveTab] = useState('photos')
   const [selected, setSelected] = useState(null)
   const [fullUri, setFullUri] = useState(null)
@@ -467,12 +512,17 @@ function AppInner() {
   const listRef = useRef(null)
   const scrubTrackRef = useRef({ y: 0, height: 0 })
   const anchorsRef = useRef([])
+  // Altura dinâmica de cada linha (tile row e date header). Medida no onLayout
+  // da primeira tileRow e usada em getItemLayout para evitar que o FlatList
+  // tenha que medir cada item individualmente (principal causa de jank em listas grandes).
+  const tileRowHeightRef = useRef(0)
+  const dateHeaderHeightRef = useRef(36)
   const scrubbingRef = useRef(false)
   const listMetricsRef = useRef({ offset: 0, contentHeight: 1, viewHeight: 1 })
   const thumbTop = useRef(new Animated.Value(0)).current
   const trackUsableRef = useRef(1)
 
-  // Controle de sync: para retomar automaticamente ao voltar do background.
+  // Controle de sync: guarda contexto para retomada manual, nunca automática.
   const syncingRef = useRef(false)
   const syncInterruptedRef = useRef(false)
   const syncCtxRef = useRef({ token: '', baseUrl: '' })
@@ -510,18 +560,10 @@ function AppInner() {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {})
     boot()
     // Ao voltar ao app, reconcilia a tag OFFLINE com o que está na pasta Pics
-    // (caso o usuário tenha apagado fotos por fora) e retoma um sync interrompido.
+    // (caso o usuário tenha apagado fotos por fora). Sync so pode ser manual.
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         refreshCachedFullIds()
-        if (syncInterruptedRef.current && !syncingRef.current) {
-          syncInterruptedRef.current = false
-          const ctx = syncCtxRef.current
-          if (ctx.token) {
-            // Retoma incremental usando o syncToken já persistido.
-            syncLibrary(ctx.token, ctx.baseUrl)
-          }
-        }
       }
     })
     return () => sub.remove()
@@ -569,7 +611,6 @@ function AppInner() {
       if (parsed.slideSeconds) setSlideSeconds(parsed.slideSeconds)
       if (parsed.token) {
         loadAlbums(parsed.token, parsed.baseUrl || baseUrl)
-        syncLibrary(parsed.token, parsed.baseUrl || baseUrl, parsed.syncToken || null, cachedItems)
       }
     }
   }
@@ -838,29 +879,33 @@ function AppInner() {
   }
 
   // Busca uma página do manifesto com algumas tentativas (resiliente a falhas de rede).
-  async function fetchManifestPage(url, activeToken, attempts = 4) {
+  async function fetchManifestPage(url, activeToken, attempts = 3) {
     let lastError
     for (let tryIndex = 0; tryIndex < attempts; tryIndex += 1) {
+      // Se o app foi para background antes mesmo de tentar, sinaliza imediatamente.
+      if (AppState.currentState !== 'active') {
+        const interrupted = new Error('background')
+        interrupted.code = 'BACKGROUND'
+        throw interrupted
+      }
       try {
-        const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) }, 20000)
+        const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) }, 15000)
         if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)
-        // Timeout TAMBÉM na leitura do corpo: se o stream HTTP/2 travar no meio
-        // (dados param mas a conexão não fecha), o response.json() ficaria
-        // pendurado para sempre e o sync travava numa página. Aqui forçamos um
-        // erro após 25s para acionar o retry desta página.
+        // Timeout também na leitura do corpo para não ficar pendurado se o stream travar.
         const bodyTimeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout lendo manifesto')), 25000)
+          setTimeout(() => reject(new Error('Timeout lendo manifesto')), 15000)
         )
         return await Promise.race([response.json(), bodyTimeout])
       } catch (error) {
         lastError = error
-        // Se o app foi para background no meio, não insiste: sinaliza para retomar depois.
         if (AppState.currentState !== 'active') {
           const interrupted = new Error('background')
           interrupted.code = 'BACKGROUND'
           throw interrupted
         }
-        await new Promise((resolve) => setTimeout(resolve, 1200 * (tryIndex + 1)))
+        if (tryIndex < attempts - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 800 * (tryIndex + 1)))
+        }
       }
     }
     throw lastError
@@ -893,20 +938,24 @@ function AppInner() {
       let nextSyncToken = activeSyncToken
       const itemMap = new Map(baseSeed.map((item) => [item.id, item]))
 
-      // Ordena e persiste o acumulado. Operações O(n): chamar só ocasionalmente
-      // (throttle) durante o loop e uma vez definitiva ao final. Isso evita que
-      // cada página fique progressivamente mais lenta com dezenas de milhares de itens.
+      // Flush incremental: mostra os itens recebidos na UI sem bloquear a JS thread
+      // com sort de 100k itens a cada página. Durante o sync, a ordem por data_taken
+      // é mantida no Map pelo servidor (que envia em ordem crescente de id, não de data),
+      // então o sort final (ao terminar o loop) é o único pesado. Durante o loop só
+      // atualizamos a contagem para a UI reagir sem travar.
+      let lastFlush = Date.now()
+      const FLUSH_INTERVAL_MS = 2000
+      // Snapshot rápido para a UI (sem sort — mostra conforme chegam)
+      const flushProgress = async () => {
+        const snapshot = Array.from(itemMap.values())
+        setItems(snapshot)
+        lastFlush = Date.now()
+        // Yield para a UI conseguir renderizar antes de continuar.
+        await new Promise((r) => setTimeout(r, 0))
+      }
       const buildSorted = () => Array.from(itemMap.values()).sort((left, right) => {
         return (right.date_taken || '').localeCompare(left.date_taken || '')
       })
-      let lastFlush = Date.now()
-      const FLUSH_INTERVAL_MS = 4000
-      const flushProgress = async () => {
-        const partial = buildSorted()
-        setItems(partial)
-        await persistItemCache(partial)
-        lastFlush = Date.now()
-      }
 
       // Paginação por keyset (seek method): em vez de OFFSET (que fica cada vez
       // mais lento — pág 66 tem que percorrer 65k linhas), pedimos ao servidor
@@ -963,8 +1012,7 @@ function AppInner() {
           afterId = data.items[data.items.length - 1].id
         }
 
-        // Salva progresso periodicamente (não a cada página) para não perder o
-        // já baixado, sem pagar o custo de reordenar/regravar a lista inteira toda página.
+        // Mostra as fotos que chegaram periodicamente — sem sort, para não bloquear a UI.
         if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
           await flushProgress()
         }
@@ -977,11 +1025,15 @@ function AppInner() {
         page += 1
       }
 
-      // Flush definitivo com a lista completa e ordenada.
-      await flushProgress()
+      // Flush definitivo: agora sim ordena tudo por data e persiste em disco.
+      const sorted = buildSorted()
+      setItems(sorted)
+      await persistItemCache(sorted)
 
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
+      setHasPendingSync(false)
+      setSyncStatus('')
 
       // O sync é SÓ a lista (diferença incremental via since/keyset). As
       // thumbnails vêm por expo-image (carrega da URL sob demanda e cacheia em
@@ -990,10 +1042,13 @@ function AppInner() {
       loadAlbums(activeToken, activeBaseUrl)
     } catch (error) {
       if (error.code === 'BACKGROUND') {
-        // Interrompido por ir para background: retoma ao voltar, sem alerta.
         syncInterruptedRef.current = true
+        setHasPendingSync(true)
+        setSyncStatus('Sincronização pausada. Toque em Sincronizar para continuar.')
       } else {
         syncInterruptedRef.current = true
+        setHasPendingSync(true)
+        setSyncStatus('Sincronização interrompida. Toque em Sincronizar para tentar novamente.')
       }
     } finally {
       syncingRef.current = false
@@ -1167,7 +1222,13 @@ function AppInner() {
 
   function markThumbnailFailed(id) {
     setItems((currentItems) => {
-      const nextItems = currentItems.map((item) => item.id === id ? { ...item, thumbnail_failed: true } : item)
+      let changed = false
+      const nextItems = currentItems.map((item) => {
+        if (item.id !== id || item.thumbnail_failed) return item
+        changed = true
+        return { ...item, thumbnail_failed: true }
+      })
+      if (!changed) return currentItems
       persistItemCache(nextItems).catch(() => {})
       return nextItems
     })
@@ -1491,34 +1552,17 @@ function AppInner() {
       if (!selectMode) startSelection(item.id)
     }
     return (
-      <Pressable key={item.id} style={styles.tile} onPress={onPress} onLongPress={onLongPress} delayLongPress={250}>
-        {item.thumbnail_failed ? (
-          <View style={[styles.thumb, styles.thumbMissing]}>
-            <Text style={styles.thumbMissingText}>SEM THUMB</Text>
-          </View>
-        ) : (
-          <ExpoImage
-            source={thumbSource(item)}
-            style={styles.thumb}
-            contentFit="cover"
-            cachePolicy="memory-disk"
-            recyclingKey={String(item.id)}
-            transition={100}
-            onError={() => markThumbnailFailed(item.id)}
-          />
-        )}
-        {cachedFullIds.has(item.id) && <Text style={styles.offlineBadge}>OFFLINE</Text>}
-        {item.media_type === 'video' && (
-          <View style={styles.videoBadge}>
-            <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
-          </View>
-        )}
-        {selectMode && (
-          <View style={[styles.selectMark, isSelected && styles.selectMarkActive]}>
-            <Text style={styles.selectMarkText}>{isSelected ? '✓' : ''}</Text>
-          </View>
-        )}
-      </Pressable>
+      <MemoTile
+        key={item.id}
+        item={item}
+        isSelected={isSelected}
+        isOffline={cachedFullIds.has(item.id)}
+        selectMode={selectMode}
+        onPress={onPress}
+        onLongPress={onLongPress}
+        onThumbError={() => markThumbnailFailed(item.id)}
+        source={thumbSource(item)}
+      />
     )
   }
 
@@ -1600,7 +1644,26 @@ function AppInner() {
       contentContainerStyle={styles.grid}
       keyboardShouldPersistTaps="handled"
       onScroll={handleListScroll}
-      scrollEventThrottle={16}
+      scrollEventThrottle={32}
+      windowSize={5}
+      maxToRenderPerBatch={8}
+      initialNumToRender={12}
+      removeClippedSubviews
+      getItemLayout={(_, index) => {
+        const tileH = tileRowHeightRef.current
+        const dateH = dateHeaderHeightRef.current
+        // Se ainda não mediu, usa uma estimativa razoável
+        const fallbackTile = tileH || 120
+        const fallbackDate = dateH || 36
+        let offset = 0
+        for (let i = 0; i < index; i++) {
+          const row = gallery.rows[i]
+          offset += row && row.type === 'date' ? fallbackDate : fallbackTile
+        }
+        const row = gallery.rows[index]
+        const length = row && row.type === 'date' ? fallbackDate : fallbackTile
+        return { length, offset, index }
+      }}
       onScrollToIndexFailed={(info) => {
         listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
       }}
@@ -1612,12 +1675,22 @@ function AppInner() {
         </View>
       )}
       renderItem={({ item }) => item.type === 'date' ? (
-        <View style={styles.dateHeader}>
+        <View
+          style={styles.dateHeader}
+          onLayout={({ nativeEvent }) => {
+            if (!dateHeaderHeightRef.current) dateHeaderHeightRef.current = nativeEvent.layout.height
+          }}
+        >
           <Text style={styles.dateTitle}>{item.title}</Text>
           <Text style={styles.dateCount}>{item.count} itens</Text>
         </View>
       ) : (
-        <View style={styles.tileRow}>
+        <View
+          style={styles.tileRow}
+          onLayout={({ nativeEvent }) => {
+            if (!tileRowHeightRef.current) tileRowHeightRef.current = nativeEvent.layout.height
+          }}
+        >
           {item.items.map(renderTile)}
           {Array.from({ length: 3 - item.items.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
         </View>
@@ -1668,6 +1741,7 @@ function AppInner() {
             <Text style={styles.primaryButtonText}>Entrar</Text>
           </Pressable>
           {!!syncStatus && <Text style={styles.status}>{syncStatus}</Text>}
+          {!!hasPendingSync && !syncing && <Text style={styles.status}>Há uma sincronização pendente e ela não será retomada automaticamente.</Text>}
         </View>
       </SafeAreaView>
     )

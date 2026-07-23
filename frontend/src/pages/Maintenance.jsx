@@ -24,9 +24,6 @@ export default function Maintenance() {
     loadAudit()
     loadJobs()
     loadRcloneLog()
-    const interval = setInterval(loadJobs, 5000)
-    const logInterval = setInterval(loadRcloneLog, 3000)
-    return () => { clearInterval(interval); clearInterval(logInterval) }
   }, [])
 
   async function loadRcloneLog() {
