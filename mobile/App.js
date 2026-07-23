@@ -1437,12 +1437,12 @@ function AppInner() {
           setFullUri(existing.uri)
           markFullCached(item.id)
         } else {
-          // Usa stream_url com autenticação — expo-av faz range requests automaticamente.
+          // HLS on-the-fly: expo-av suporta HLS nativo no Android/iOS.
+          // O ffmpeg transcodifica para 720p em tempo real — seek instantâneo,
+          // sem baixar o arquivo original (mesmo para vídeos de 5 GB).
           const base = normalizeBaseUrl(baseUrl)
-          const streamUrl = item.stream_url || `${base}/api/media/${item.id}/stream`
-          // Inclui token como query param porque expo-av não suporta headers customizados em todas as versões.
           const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-          setFullUri(`${streamUrl}${tokenParam}`)
+          setFullUri(`${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`)
         }
       } else {
         // Imagens: procura na galeria offline primeiro, senão baixa o full.

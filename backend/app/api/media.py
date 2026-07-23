@@ -1162,6 +1162,75 @@ def stream_media(
     )
 
 
+@router.get("/{media_id}/hls/playlist.m3u8")
+def hls_playlist(
+    media_id: int,
+    request: Request,
+    token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Gera playlist HLS (.m3u8) on-the-fly para streaming adaptativo.
+
+    Não grava nada em disco — a playlist é gerada dinamicamente com base
+    na duração do vídeo (via ffprobe). Cada segmento aponta para /hls/seg_{n}.ts.
+    """
+    _auth_stream(request, token)
+    media = db.query(Media).get(media_id)
+    if not media or media.media_type != "video":
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    from app.services.hls_service import get_duration, build_playlist
+    duration = get_duration(filepath)
+    if duration <= 0:
+        raise HTTPException(status_code=500, detail="Não foi possível determinar a duração do vídeo")
+
+    raw_token = token or request.headers.get("Authorization", "").replace("Bearer ", "")
+    base_url = str(request.base_url).rstrip("/")
+    playlist = build_playlist(media_id, duration, base_url, raw_token)
+
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        playlist,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/{media_id}/hls/seg_{seg_index}.ts")
+def hls_segment(
+    media_id: int,
+    seg_index: int,
+    request: Request,
+    token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Gera e faz pipe de um segmento .ts via ffmpeg on-the-fly.
+
+    ffmpeg faz seek direto no segundo correto (-ss input seeking), transcodifica
+    apenas aquele trecho (4s) em 720p/ultrafast e envia para o cliente.
+    Nenhum dado é gravado em disco.
+    """
+    _auth_stream(request, token)
+    media = db.query(Media).get(media_id)
+    if not media or media.media_type != "video":
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    from app.services.hls_service import stream_segment
+    return StreamingResponse(
+        stream_segment(filepath, seg_index),
+        media_type="video/mp2t",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @router.get("/{media_id}/thumbnail")
 def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Session = Depends(get_db)):
     """Retorna thumbnail da mídia com cache persistente."""
