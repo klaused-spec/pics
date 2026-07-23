@@ -562,6 +562,11 @@ function AppInner() {
   const dateHeaderHeightRef = useRef(36)
   const scrubbingRef = useRef(false)
   const viewerItemsRef = useRef([])
+  // Zoom/pan do viewer
+  const viewerScale = useRef(new Animated.Value(1)).current
+  const viewerTranslateX = useRef(new Animated.Value(0)).current
+  const viewerTranslateY = useRef(new Animated.Value(0)).current
+  const viewerZoomRef = useRef({ scale: 1, tx: 0, ty: 0, lastTap: 0 })
   const listMetricsRef = useRef({ offset: 0, contentHeight: 1, viewHeight: 1 })
   const thumbTop = useRef(new Animated.Value(0)).current
   const trackUsableRef = useRef(1)
@@ -1335,21 +1340,85 @@ function AppInner() {
     })
   }
 
+  function resetViewerZoom() {
+    viewerZoomRef.current.scale = 1
+    viewerZoomRef.current.tx = 0
+    viewerZoomRef.current.ty = 0
+    Animated.parallel([
+      Animated.spring(viewerScale, { toValue: 1, useNativeDriver: true }),
+      Animated.spring(viewerTranslateX, { toValue: 0, useNativeDriver: true }),
+      Animated.spring(viewerTranslateY, { toValue: 0, useNativeDriver: true }),
+    ]).start()
+  }
+
   function navigateViewer(direction) {
     const list = viewerItemsRef.current
     if (!list.length || !selected) return
     const idx = list.findIndex((i) => i.id === selected.id)
     const next = list[idx + direction]
-    if (next) openItem(next)
+    if (next) { resetViewerZoom(); openItem(next) }
   }
 
   const viewerPanResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_evt, gs) =>
-        Math.abs(gs.dx) > 10 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5,
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_evt, gs) => {
+        const touches = _evt.nativeEvent.touches?.length || 1
+        if (touches >= 2) return true
+        const z = viewerZoomRef.current
+        // com zoom ativo aceita pan; sem zoom aceita swipe horizontal
+        return z.scale > 1.05
+          ? true
+          : Math.abs(gs.dx) > 10 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5
+      },
+      onPanResponderGrant: (_evt) => {
+        // Duplo tap → reset zoom
+        const now = Date.now()
+        const z = viewerZoomRef.current
+        if (now - z.lastTap < 300) { resetViewerZoom(); z.lastTap = 0; return }
+        z.lastTap = now
+      },
+      onPanResponderMove: (_evt, gs) => {
+        const touches = _evt.nativeEvent.touches
+        const z = viewerZoomRef.current
+        if (touches && touches.length >= 2) {
+          // Pinch zoom: calcula distância entre os dois dedos
+          const t0 = touches[0]; const t1 = touches[1]
+          const dist = Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY)
+          if (!z.pinchStart) { z.pinchStart = dist; z.pinchScaleStart = z.scale; return }
+          const newScale = Math.max(1, Math.min(5, z.pinchScaleStart * (dist / z.pinchStart)))
+          z.scale = newScale
+          viewerScale.setValue(newScale)
+        } else if (z.scale > 1.05) {
+          // Pan com zoom ativo
+          const newTx = z.tx + gs.dx - (z.lastDx || 0)
+          const newTy = z.ty + gs.dy - (z.lastDy || 0)
+          z.lastDx = gs.dx; z.lastDy = gs.dy
+          viewerTranslateX.setValue(newTx)
+          viewerTranslateY.setValue(newTy)
+        }
+      },
       onPanResponderRelease: (_evt, gs) => {
-        if (gs.dx < -50) navigateViewer(1)
-        else if (gs.dx > 50) navigateViewer(-1)
+        const z = viewerZoomRef.current
+        z.pinchStart = null
+        // Salva posição final do pan
+        if (z.scale > 1.05) {
+          z.tx = z.tx + (z.lastDx || 0) - (z.lastDx || 0)
+          z.lastDx = 0; z.lastDy = 0
+          // Snap de volta se foi muito longe
+          const limit = 200 * (z.scale - 1)
+          const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
+          const clampedTy = Math.max(-limit, Math.min(limit, z.ty))
+          z.tx = clampedTx; z.ty = clampedTy
+          Animated.parallel([
+            Animated.spring(viewerTranslateX, { toValue: clampedTx, useNativeDriver: true }),
+            Animated.spring(viewerTranslateY, { toValue: clampedTy, useNativeDriver: true }),
+          ]).start()
+          return
+        }
+        // Swipe lateral para mudar foto (só sem zoom)
+        if (gs.dx < -60 && Math.abs(gs.dy) < 80) navigateViewer(1)
+        else if (gs.dx > 60 && Math.abs(gs.dy) < 80) navigateViewer(-1)
       },
     })
   ).current
@@ -2253,7 +2322,7 @@ function AppInner() {
       </View>
 
       <Modal visible={!!selected} animationType="slide" onRequestClose={() => setSelected(null)}>
-        <SafeAreaView style={styles.viewer} {...viewerPanResponder.panHandlers}>
+        <SafeAreaView style={styles.viewer}>
           <View style={styles.viewerHeader}>
             <Pressable onPress={() => setSelected(null)} style={styles.closeButton}>
               <Text style={styles.closeButtonText}>Fechar</Text>
@@ -2269,7 +2338,15 @@ function AppInner() {
               <Text style={styles.viewerStatus}>Baixando arquivo full {Math.round(fullProgress * 100)}%</Text>
             </View>
           )}
-          {!fullLoading && fullUri && selected?.media_type === 'image' && <Image source={{ uri: fullUri }} style={styles.fullImage} resizeMode="contain" />}
+          {!fullLoading && fullUri && selected?.media_type === 'image' && (
+            <View style={styles.fullImage} {...viewerPanResponder.panHandlers}>
+              <Animated.Image
+                source={{ uri: fullUri }}
+                style={[styles.fullImage, { transform: [{ scale: viewerScale }, { translateX: viewerTranslateX }, { translateY: viewerTranslateY }] }]}
+                resizeMode="contain"
+              />
+            </View>
+          )}
           {!fullLoading && fullUri && selected?.media_type === 'video' && (
             <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
           )}
