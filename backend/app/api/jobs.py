@@ -290,28 +290,20 @@ def restart_app(
     import os
 
     def do_restart():
-        root = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-        )
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[3]  # backend/app/api/jobs.py -> pics/
         if sys.platform == "win32":
-            restart_bat = os.path.join(root, "restart-app.bat")
-            # Script inline: dorme 3s, mata processos, sobe o bat numa nova janela.
-            ps_script = (
-                "Start-Sleep -Seconds 3; "
-                "Get-Process -Name python,caddy -ErrorAction SilentlyContinue | Stop-Process -Force; "
-                "Start-Sleep -Seconds 1; "
-                f"Start-Process cmd -ArgumentList '/k \"{restart_bat}\"' -WindowStyle Normal"
-            )
-            # DETACHED_PROCESS (0x00000008) + CREATE_NEW_PROCESS_GROUP (0x00000200)
-            # fazem o filho sobreviver ao kill do pai.
-            DETACHED = 0x00000008 | 0x00000200
+            vbs = str(root / "restart-app.vbs")
+            # wscript.exe lança o VBS fora de qualquer job/console do Windows,
+            # completamente desacoplado do processo Python. O VBS por sua vez
+            # lança o PowerShell que mata e reinicia tudo.
             subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
-                creationflags=DETACHED,
+                ["wscript.exe", vbs],
+                creationflags=0x00000008,  # DETACHED_PROCESS
                 close_fds=True,
             )
         else:
-            restart_sh = os.path.join(root, "restart-app.sh")
+            restart_sh = str(root / "restart-app.sh")
             subprocess.Popen(
                 ["bash", "-c", f"sleep 3 && bash '{restart_sh}'"],
                 start_new_session=True,

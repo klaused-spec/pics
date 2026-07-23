@@ -1008,6 +1008,12 @@ function AppInner() {
       let afterId = null
 
       while (true) {
+        // Interrupção solicitada externamente (ex.: import de pacote iniciado).
+        if (syncInterruptedRef.current) {
+          const interrupted = new Error('cancelled')
+          interrupted.code = 'BACKGROUND'
+          throw interrupted
+        }
         const sinceParam = requestedSince ? `&since=${encodeURIComponent(requestedSince)}` : ''
         // Cursor keyset por id apenas (PK). NÃO usar updated_at no cursor: há
         // dezenas de milhares de itens com o mesmo updated_at (importação em
@@ -1133,6 +1139,14 @@ function AppInner() {
   // (pendrive / Downloads). Rápido: lê o zip do disco e grava direto.
   async function importOfflinePack() {
     if (offlineThumbsRef.current) return
+    if (syncingRef.current) {
+      // Interrompe o sync ativo para o import não concorrer com ele.
+      syncInterruptedRef.current = true
+      // Aguarda o sync perceber a interrupção (ele checa AppState a cada página).
+      // Como não temos um cancel token, apenas sinalizamos e prosseguimos;
+      // o sync vai falhar na próxima iteração e soltar o lock.
+      await new Promise((r) => setTimeout(r, 800))
+    }
     try {
       const picked = await DocumentPicker.getDocumentAsync({
         type: ['application/zip', 'application/octet-stream', '*/*'],
@@ -1280,6 +1294,13 @@ function AppInner() {
         merged.sort((a, b) => (b.date_taken || '').localeCompare(a.date_taken || ''))
         setItems(merged)
         persistItemCache(merged).catch(() => {})
+        // Pacote completo: reseta o syncToken para forçar sync incremental leve
+        // na próxima vez (não full sync), e limpa estado de sync interrompido.
+        setSyncToken(null)
+        setHasPendingSync(false)
+        setSyncStatus('')
+        syncInterruptedRef.current = false
+        persistSettings({ syncToken: null }).catch(() => {})
         setOfflineStatus(`Pacote importado: ${merged.length} itens · ${savedIds.size} thumbnails`)
       } else {
         // Pacote antigo (só thumbs): apenas marca local_thumbnail_uri nos itens já conhecidos.
