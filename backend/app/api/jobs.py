@@ -249,3 +249,80 @@ def clear_jobs_history(
         "deleted": deleted_count,
         "force": force,
     }
+
+
+@router.post("/reboot")
+def reboot_server(
+    current_user: dict = Depends(get_current_user),
+):
+    """Força reinicialização imediata do sistema operacional (shutdown -r -t 0)."""
+    import subprocess
+    import threading
+    import sys
+
+    def do_reboot():
+        import time
+        time.sleep(1)  # dá tempo para a resposta HTTP chegar
+        if sys.platform == "win32":
+            subprocess.run(["shutdown", "/r", "/t", "0"], check=False)
+        else:
+            subprocess.run(["shutdown", "-r", "-t", "0"], check=False)
+
+    threading.Thread(target=do_reboot, daemon=True).start()
+    return {"message": "Reinicialização agendada"}
+
+
+@router.post("/restart-app")
+def restart_app(
+    current_user: dict = Depends(get_current_user),
+):
+    """Mata uvicorn e Caddy e relança start.bat (reinicia só a aplicação, sem reboot do PC)."""
+    import subprocess
+    import threading
+    import sys
+    import os
+
+    def do_restart():
+        import time
+        time.sleep(1)  # dá tempo para a resposta HTTP chegar ao cliente
+        if sys.platform == "win32":
+            # Mata processos existentes silenciosamente
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "python.exe", "/T"],
+                check=False, capture_output=True,
+            )
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "uvicorn.exe", "/T"],
+                check=False, capture_output=True,
+            )
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "caddy.exe", "/T"],
+                check=False, capture_output=True,
+            )
+            # Relança start.bat em nova janela independente
+            root = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+            )
+            start_bat = os.path.join(root, "start.bat")
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", start_bat],
+                cwd=root,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                close_fds=True,
+            )
+        else:
+            # Linux/WSL: mata uvicorn e caddy e relança start.sh
+            subprocess.run(["pkill", "-f", "uvicorn"], check=False)
+            subprocess.run(["pkill", "-f", "caddy"], check=False)
+            root = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+            )
+            start_sh = os.path.join(root, "start.sh")
+            subprocess.Popen(
+                ["bash", start_sh],
+                cwd=root,
+                start_new_session=True,
+            )
+
+    threading.Thread(target=do_restart, daemon=True).start()
+    return {"message": "Reinicialização da aplicação iniciada. O sistema ficará offline por alguns segundos."}

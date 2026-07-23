@@ -38,6 +38,8 @@ const THUMB_DIR = `${FileSystem.documentDirectory}thumbs/`
 const FULL_DIR = `${FileSystem.documentDirectory}full/`
 // Lista completa da biblioteca em arquivo (AsyncStorage não escala para 100k+ itens).
 const ITEMS_FILE = `${FileSystem.documentDirectory}items.json`
+const ITEMS_CHUNK_DIR = `${FileSystem.documentDirectory}items_chunks/`
+const ITEMS_CHUNK_SIZE = 8000 // itens por arquivo — ~4-6 MB cada, bem abaixo do limite do bridge RN
 const DEFAULT_SLIDE_SECONDS = 5
 const SCRUB_THUMB = 44
 const GALLERY_ALBUM = 'Pics'
@@ -92,6 +94,7 @@ function formatDuration(seconds) {
 async function ensureDirectories() {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true })
   await FileSystem.makeDirectoryAsync(FULL_DIR, { intermediates: true })
+  await FileSystem.makeDirectoryAsync(ITEMS_CHUNK_DIR, { intermediates: true })
 }
 
 // Concatena vários Uint8Array (pedaços de um mesmo arquivo do zip) em um só.
@@ -158,23 +161,41 @@ function toByteArrayBase64(b64) {
 }
 
 async function persistItemCache(nextItems) {
-  // Sem limite: grava a lista inteira em arquivo (suporta 100k+ itens).
-  // Proteção: nunca sobrescreve um cache não-vazio com uma lista vazia
-  // (evita "perder tudo" se um sync incremental/interrompido produzir lista vazia).
+  // Grava em CHUNKS de ITEMS_CHUNK_SIZE itens para não estourar o limite do
+  // bridge React Native (~60 MB por string). Com 100k itens o JSON único passa
+  // de 50 MB e o writeAsStringAsync falha silenciosamente — daí o "tudo vazio".
+  // Cada chunk fica em items_chunks/chunk_N.json (~4-6 MB), bem dentro do limite.
+  // Proteção: nunca sobrescreve cache não-vazio com lista vazia.
+  if (!nextItems || nextItems.length === 0) {
+    const existing = await loadItemCache()
+    if (existing.length > 0) return existing.length
+    // Cache já está vazio — pode limpar tudo.
+  }
   try {
-    if ((!nextItems || nextItems.length === 0)) {
-      if (await fileExists(ITEMS_FILE)) {
-        const raw = await FileSystem.readAsStringAsync(ITEMS_FILE).catch(() => null)
-        if (raw) {
-          const existing = JSON.parse(raw)
-          if (Array.isArray(existing) && existing.length > 0) {
-            return existing.length
-          }
-        }
-      }
+    await FileSystem.makeDirectoryAsync(ITEMS_CHUNK_DIR, { intermediates: true })
+    // Remove chunks antigos.
+    const dirInfo = await FileSystem.getInfoAsync(ITEMS_CHUNK_DIR)
+    if (dirInfo.exists) {
+      const existing = await FileSystem.readDirectoryAsync(ITEMS_CHUNK_DIR).catch(() => [])
+      await Promise.all(
+        existing
+          .filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
+          .map((f) => FileSystem.deleteAsync(`${ITEMS_CHUNK_DIR}${f}`, { idempotent: true }))
+      )
     }
-    await FileSystem.writeAsStringAsync(ITEMS_FILE, JSON.stringify(nextItems))
-    // Remove o cache antigo baseado em AsyncStorage, se existir.
+    // Grava novos chunks em paralelo (cada um pequeno o suficiente para o bridge).
+    const writes = []
+    for (let i = 0; i * ITEMS_CHUNK_SIZE < nextItems.length; i++) {
+      const slice = nextItems.slice(i * ITEMS_CHUNK_SIZE, (i + 1) * ITEMS_CHUNK_SIZE)
+      writes.push(
+        FileSystem.writeAsStringAsync(`${ITEMS_CHUNK_DIR}chunk_${i}.json`, JSON.stringify(slice))
+      )
+    }
+    await Promise.all(writes)
+    // Grava índice (número de chunks) para que loadItemCache saiba quantos ler.
+    await FileSystem.writeAsStringAsync(`${ITEMS_CHUNK_DIR}index.json`, JSON.stringify({ chunks: writes.length, total: nextItems.length }))
+    // Limpa o arquivo legado de arquivo único, se existir.
+    await FileSystem.deleteAsync(ITEMS_FILE, { idempotent: true }).catch(() => {})
     await AsyncStorage.removeItem(ITEMS_KEY).catch(() => {})
   } catch (_) {
     return 0
@@ -183,20 +204,42 @@ async function persistItemCache(nextItems) {
 }
 
 async function loadItemCache() {
-  // Preferência: arquivo. Fallback: AsyncStorage legado (migra para arquivo).
+  // 1) Tenta chunks (formato novo).
+  try {
+    const idxPath = `${ITEMS_CHUNK_DIR}index.json`
+    if (await fileExists(idxPath)) {
+      const idxRaw = await FileSystem.readAsStringAsync(idxPath)
+      const idx = JSON.parse(idxRaw)
+      if (idx && idx.chunks > 0) {
+        const reads = []
+        for (let i = 0; i < idx.chunks; i++) {
+          reads.push(FileSystem.readAsStringAsync(`${ITEMS_CHUNK_DIR}chunk_${i}.json`))
+        }
+        const parts = await Promise.all(reads)
+        const all = parts.flatMap((p) => JSON.parse(p))
+        if (all.length > 0) return all
+      }
+    }
+  } catch (_) {}
+  // 2) Fallback: arquivo único legado.
   try {
     if (await fileExists(ITEMS_FILE)) {
       const raw = await FileSystem.readAsStringAsync(ITEMS_FILE)
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) return parsed
+      if (Array.isArray(parsed) && parsed.length) {
+        // Migra para chunks na próxima gravação.
+        persistItemCache(parsed).catch(() => {})
+        return parsed
+      }
     }
   } catch (_) {}
+  // 3) Fallback: AsyncStorage legado.
   try {
     const legacy = await AsyncStorage.getItem(ITEMS_KEY)
     if (legacy) {
       const parsed = JSON.parse(legacy)
       if (Array.isArray(parsed) && parsed.length) {
-        await FileSystem.writeAsStringAsync(ITEMS_FILE, JSON.stringify(parsed)).catch(() => {})
+        persistItemCache(parsed).catch(() => {})
         await AsyncStorage.removeItem(ITEMS_KEY).catch(() => {})
         return parsed
       }
@@ -518,6 +561,7 @@ function AppInner() {
   const tileRowHeightRef = useRef(0)
   const dateHeaderHeightRef = useRef(36)
   const scrubbingRef = useRef(false)
+  const viewerItemsRef = useRef([])
   const listMetricsRef = useRef({ offset: 0, contentHeight: 1, viewHeight: 1 })
   const thumbTop = useRef(new Animated.Value(0)).current
   const trackUsableRef = useRef(1)
@@ -1270,6 +1314,25 @@ function AppInner() {
     })
   }
 
+  function navigateViewer(direction) {
+    const list = viewerItemsRef.current
+    if (!list.length || !selected) return
+    const idx = list.findIndex((i) => i.id === selected.id)
+    const next = list[idx + direction]
+    if (next) openItem(next)
+  }
+
+  const viewerPanResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_evt, gs) =>
+        Math.abs(gs.dx) > 10 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5,
+      onPanResponderRelease: (_evt, gs) => {
+        if (gs.dx < -50) navigateViewer(1)
+        else if (gs.dx > 50) navigateViewer(-1)
+      },
+    })
+  ).current
+
   async function openItem(item) {
     setSelected(item)
     setFullUri(null)
@@ -1524,6 +1587,7 @@ function AppInner() {
       }
     }
 
+    viewerItemsRef.current = visibleItems
     return { rows, anchors, total: visibleItems.length }
   }, [cachedFullIds, deferredSearchQuery, items, mediaFilter, offlineOnly])
 
@@ -2168,7 +2232,7 @@ function AppInner() {
       </View>
 
       <Modal visible={!!selected} animationType="slide" onRequestClose={() => setSelected(null)}>
-        <SafeAreaView style={styles.viewer}>
+        <SafeAreaView style={styles.viewer} {...viewerPanResponder.panHandlers}>
           <View style={styles.viewerHeader}>
             <Pressable onPress={() => setSelected(null)} style={styles.closeButton}>
               <Text style={styles.closeButtonText}>Fechar</Text>

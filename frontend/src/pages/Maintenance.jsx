@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X, Cloud } from 'lucide-react'
-import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob } from '../api'
+import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp } from '../api'
 
 export default function Maintenance() {
   const [audit, setAudit] = useState(null)
@@ -67,6 +67,14 @@ export default function Maintenance() {
       else if (action === 'full') await startFullPipeline()
       else if (action === 'purge') await startPurgeMissing()
       else if (action === 'rclone') await startRcloneDownload()
+      else if (action === 'reboot') {
+        await rebootServer()
+        setMessage({ type: 'success', text: 'Reinicialização iniciada. O servidor ficará offline em instantes.' })
+      }
+      else if (action === 'restart_app') {
+        await restartApp()
+        setMessage({ type: 'success', text: 'Reiniciando backend + Caddy. Aguarde ~15 segundos e recarregue a página.' })
+      }
       else if (action === 'warmup_cache') {
         await startThumbnailWarmup()
         setMessage({ type: 'success', text: 'Cache de thumbnails iniciado em segundo plano.' })
@@ -220,6 +228,26 @@ export default function Maintenance() {
       name: 'Resume interrupted',
     },
     {
+      action: 'restart_app',
+      icon: <RotateCcw className="w-4 h-4" />,
+      label: 'Reiniciar Aplicação',
+      description: 'Mata e reinicia backend + Caddy (sem reboot do PC)',
+      name: 'Restart app',
+      destructive: true,
+      confirm: true,
+      confirmMessage: 'Tem certeza? Backend e Caddy serão reiniciados. A página ficará offline por ~15 segundos.',
+    },
+    {
+      action: 'reboot',
+      icon: <AlertTriangle className="w-4 h-4" />,
+      label: 'Reiniciar PC',
+      description: 'Força reinicialização imediata do servidor',
+      name: 'Reboot',
+      destructive: true,
+      confirm: true,
+      confirmMessage: 'Tem certeza? O servidor será reiniciado imediatamente (shutdown -r -t 0).',
+    },
+    {
       action: 'clear_jobs',
       icon: <Trash2 className="w-4 h-4" />,
       label: 'Limpar histórico de jobs',
@@ -227,7 +255,7 @@ export default function Maintenance() {
       name: 'Clear jobs',
       destructive: true,
       confirm: true,
-      confirmMessage: 'Apagar o histórico de jobs concluídos/erro? Jobs em execução não serão removidos.',
+      confirmMessage: 'Apagar o histórico de jobs concluídos/erro? Jobs em execuão não serão removidos.',
       allowWhileRunning: true,
     },
   ]

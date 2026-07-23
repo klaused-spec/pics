@@ -113,6 +113,8 @@ export const removeMediaFromAlbum = (albumId, mediaIds) => api.delete(`/albums/$
 export const createFolderAndMoveMedia = (year, month, folderName, mediaIds) => api.post('/media/folders', { year, month, folder_name: folderName, media_ids: mediaIds })
 export const bulkCorrectMediaDate = (data) => api.post('/media/bulk-date-correction', data)
 export const startThumbnailWarmup = (size = 300) => api.post('/jobs/thumbnail-warmup', null, { params: { size } })
+export const rebootServer = () => api.post('/jobs/reboot')
+export const restartApp = () => api.post('/jobs/restart-app')
 export const deleteJob = (jobId) => api.delete(`/jobs/${jobId}`)
 export const deleteAllJobs = (force = false) => api.delete('/jobs/', { params: { force } })
 export const resumeInterruptedJobs = () => api.post('/jobs/resume-interrupted')
