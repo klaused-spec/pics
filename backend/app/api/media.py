@@ -1051,6 +1051,117 @@ def get_media_file(media_id: int, db: Session = Depends(get_db)):
     return FileResponse(filepath, media_type=mime_type or "application/octet-stream")
 
 
+def _auth_stream(request: Request, token: Optional[str] = None) -> dict:
+    """Autenticação para streaming: aceita Bearer header OU ?token= query param.
+
+    O expo-av não suporta headers customizados em todas as versões do Android,
+    então o token pode vir como query param na stream_url.
+    """
+    from jose import JWTError, jwt
+    from app.core.config import settings as cfg
+    # Tenta query param primeiro, depois Bearer header.
+    raw = token or ""
+    if not raw:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            raw = auth[7:]
+    if not raw:
+        raise HTTPException(status_code=401, detail="Token ausente")
+    try:
+        payload = jwt.decode(raw, cfg.secret_key, algorithms=[cfg.algorithm])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Token inválido")
+        return {"user_id": int(user_id)}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+
+
+@router.get("/{media_id}/stream")
+def stream_media(
+    media_id: int,
+    request: Request,
+    token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Streaming com suporte a HTTP Range requests.
+
+    Permite que players (expo-av, browsers) façam seek instantâneo em vídeos
+    grandes sem baixar o arquivo completo. Cada request retorna só o trecho
+    solicitado pelo Range header.
+    Aceita autenticação via Bearer header ou ?token= query param.
+    """
+    _auth_stream(request, token)
+    media = db.query(Media).get(media_id)
+    if not media:
+        raise HTTPException(status_code=404, detail="Mídia não encontrada")
+
+    filepath = media.organized_path or media.original_path
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    file_size = os.path.getsize(filepath)
+    mime_type, _ = mimetypes.guess_type(filepath)
+    mime_type = mime_type or "application/octet-stream"
+
+    range_header = request.headers.get("Range")
+
+    if not range_header:
+        # Sem Range: devolve tudo com headers que indicam suporte a range.
+        def full_iter():
+            with open(filepath, "rb") as f:
+                while chunk := f.read(1 << 20):  # 1 MB
+                    yield chunk
+        return StreamingResponse(
+            full_iter(),
+            media_type=mime_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            },
+        )
+
+    # Parseia "bytes=start-end"
+    try:
+        range_val = range_header.replace("bytes=", "")
+        start_str, _, end_str = range_val.partition("-")
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+    except ValueError:
+        raise HTTPException(status_code=416, detail="Range inválido")
+
+    if start >= file_size or end >= file_size or start > end:
+        raise HTTPException(
+            status_code=416,
+            detail="Range fora dos limites",
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    chunk_size = end - start + 1
+
+    def range_iter():
+        with open(filepath, "rb") as f:
+            f.seek(start)
+            remaining = chunk_size
+            while remaining > 0:
+                data = f.read(min(1 << 20, remaining))  # 1 MB
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    return StreamingResponse(
+        range_iter(),
+        status_code=206,
+        media_type=mime_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(chunk_size),
+        },
+    )
+
+
 @router.get("/{media_id}/thumbnail")
 def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Session = Depends(get_db)):
     """Retorna thumbnail da mídia com cache persistente."""

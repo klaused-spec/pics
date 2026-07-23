@@ -1429,16 +1429,32 @@ function AppInner() {
     setFullProgress(0)
     setFullLoading(true)
     try {
-      // Offline = existe na pasta "Pics" da galeria. Procura lá primeiro.
-      const existing = await findGalleryAsset(item)
-      if (existing) {
-        setFullUri(existing.uri)
-        markFullCached(item.id)
+      if (item.media_type === 'video') {
+        // Vídeos: streaming direto via HTTP Range — não baixa para o disco.
+        // Verifica primeiro se já está offline na galeria (salvo pelo usuário).
+        const existing = await findGalleryAsset(item)
+        if (existing) {
+          setFullUri(existing.uri)
+          markFullCached(item.id)
+        } else {
+          // Usa stream_url com autenticação — expo-av faz range requests automaticamente.
+          const base = normalizeBaseUrl(baseUrl)
+          const streamUrl = item.stream_url || `${base}/api/media/${item.id}/stream`
+          // Inclui token como query param porque expo-av não suporta headers customizados em todas as versões.
+          const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+          setFullUri(`${streamUrl}${tokenParam}`)
+        }
       } else {
-        // Não está mais na galeria (você apagou por fora): tira a tag e baixa de novo.
-        unmarkFullCached(item.id)
-        const uri = await ensureFullDownloaded(item, setFullProgress)
-        setFullUri(uri)
+        // Imagens: procura na galeria offline primeiro, senão baixa o full.
+        const existing = await findGalleryAsset(item)
+        if (existing) {
+          setFullUri(existing.uri)
+          markFullCached(item.id)
+        } else {
+          unmarkFullCached(item.id)
+          const uri = await ensureFullDownloaded(item, setFullProgress)
+          setFullUri(uri)
+        }
       }
     } catch (error) {
       if (error.code === 'PERMISSION') {
