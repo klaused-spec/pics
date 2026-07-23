@@ -1364,15 +1364,15 @@ function AppInner() {
   const viewerPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: (_evt) => (_evt.nativeEvent.touches?.length || 1) >= 2,
       onMoveShouldSetPanResponder: (_evt, gs) => {
-        const touches = _evt.nativeEvent.touches?.length || 1
-        if (touches >= 2) return true
+        if (gs.numberActiveTouches >= 2) return true
         const z = viewerZoomRef.current
-        // com zoom ativo aceita pan; sem zoom aceita swipe horizontal
         return z.scale > 1.05
           ? true
           : Math.abs(gs.dx) > 10 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5
       },
+      onMoveShouldSetPanResponderCapture: (_evt, gs) => gs.numberActiveTouches >= 2,
       onPanResponderGrant: (_evt) => {
         // Duplo tap → reset zoom
         const now = Date.now()
@@ -1381,9 +1381,10 @@ function AppInner() {
         z.lastTap = now
       },
       onPanResponderMove: (_evt, gs) => {
-        const touches = _evt.nativeEvent.touches
         const z = viewerZoomRef.current
-        if (touches && touches.length >= 2) {
+        const numTouches = gs.numberActiveTouches
+        const touches = _evt.nativeEvent.touches
+        if (numTouches >= 2 && touches && touches.length >= 2) {
           // Pinch zoom: calcula distância entre os dois dedos
           const t0 = touches[0]; const t1 = touches[1]
           const dist = Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY)
@@ -1391,10 +1392,11 @@ function AppInner() {
           const newScale = Math.max(1, Math.min(5, z.pinchScaleStart * (dist / z.pinchStart)))
           z.scale = newScale
           viewerScale.setValue(newScale)
-        } else if (z.scale > 1.05) {
+        } else if (numTouches === 1 && z.scale > 1.05) {
           // Pan com zoom ativo
           const newTx = z.tx + gs.dx - (z.lastDx || 0)
           const newTy = z.ty + gs.dy - (z.lastDy || 0)
+          z.tx = newTx; z.ty = newTy
           z.lastDx = gs.dx; z.lastDy = gs.dy
           viewerTranslateX.setValue(newTx)
           viewerTranslateY.setValue(newTy)
@@ -1403,10 +1405,8 @@ function AppInner() {
       onPanResponderRelease: (_evt, gs) => {
         const z = viewerZoomRef.current
         z.pinchStart = null
-        // Salva posição final do pan
+        z.lastDx = 0; z.lastDy = 0
         if (z.scale > 1.05) {
-          // tx/ty já foram atualizados incrementalmente no onMove; só limpa deltas
-          z.lastDx = 0; z.lastDy = 0
           // Snap de volta se foi muito longe
           const limit = 200 * (z.scale - 1)
           const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
@@ -1419,8 +1419,10 @@ function AppInner() {
           return
         }
         // Swipe lateral para mudar foto (só sem zoom)
-        if (gs.dx < -60 && Math.abs(gs.dy) < 80) navigateViewer(1)
-        else if (gs.dx > 60 && Math.abs(gs.dy) < 80) navigateViewer(-1)
+        if (gs.numberActiveTouches === 0) {
+          if (gs.dx < -60 && Math.abs(gs.dy) < 80) navigateViewer(1)
+          else if (gs.dx > 60 && Math.abs(gs.dy) < 80) navigateViewer(-1)
+        }
       },
     })
   ).current
@@ -1433,21 +1435,12 @@ function AppInner() {
     setFullLoading(true)
     try {
       if (item.media_type === 'video') {
-        // Vídeos: streaming direto via HTTP Range — não baixa para o disco.
-        // Verifica primeiro se já está offline na galeria (salvo pelo usuário).
-        const existing = await findGalleryAsset(item)
-        if (existing) {
-          setFullUri(existing.uri)
-          markFullCached(item.id)
-        } else {
-          // HLS on-the-fly: expo-av suporta HLS nativo no Android/iOS.
-          // O ffmpeg transcodifica para 720p em tempo real — seek instantâneo,
-          // sem baixar o arquivo original (mesmo para vídeos de 5 GB).
-          const base = normalizeBaseUrl(baseUrl)
-          const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-          setFullUri(`${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`)
-          setFullLoading(false)
-        }
+        // Vídeos: sempre HLS on-the-fly (720p, sem baixar o arquivo original).
+        // Não usa galeria local pois carregar um .mp4 de vários GB seria lento.
+        const base = normalizeBaseUrl(baseUrl)
+        const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+        setFullUri(`${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`)
+        setFullLoading(false)
       } else {
         // Imagens: procura na galeria offline primeiro, senão baixa o full.
         const existing = await findGalleryAsset(item)
@@ -2321,7 +2314,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.1</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.2</Text>
             </View>
           )}
         />
