@@ -74,22 +74,11 @@ def stream_segment(filepath: str, seg_index: int) -> Generator[bytes, None, None
 
     cmd = [
         settings.ffmpeg_path,
-        "-ss", str(start),           # seek no input (rápido, não precisa decodificar antes)
+        "-ss", str(start),           # seek no input (rápido)
         "-i", filepath,
         "-t", str(SEG_DURATION),     # duração do segmento
-        # Vídeo: escala para 720p max, mantém proporção
-        "-vf", f"scale=-2:{TARGET_HEIGHT}:flags=lanczos",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",      # transcodifica em tempo real
-        "-tune", "zerolatency",
-        "-b:v", VIDEO_BITRATE,
-        "-maxrate", VIDEO_BITRATE,
-        "-bufsize", "4000k",
-        # Áudio
-        "-c:a", "aac",
-        "-b:a", AUDIO_BITRATE,
-        "-ac", "2",
-        # Saída MPEG-TS para pipe
+        # Sem transcodificação: copia streams originais direto para MPEG-TS
+        "-c", "copy",
         "-f", "mpegts",
         "-",                         # stdout
     ]
