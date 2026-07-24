@@ -123,7 +123,10 @@ export const resumeJob = (jobId) => api.post(`/jobs/${jobId}/resume`)
 // URLs de mídia
 export const getThumbnailUrl = (id, size = 300) => `${backendRoot}/api/media/${id}/thumbnail?size=${size}`
 export const getFileUrl = (id) => `${backendRoot}/api/media/${id}/file`
-export const getStreamUrl = (id) => `${backendRoot}/api/media/${id}/stream`
+export const getStreamUrl = (id) => {
+  const token = localStorage.getItem('access_token')
+  return `${backendRoot}/api/media/${id}/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`
+}
 export const forceTranscode = (id) => api.post(`/media/${id}/transcode`)
 export const getTranscodeStatus = (id) => api.get(`/media/${id}/transcode-status`)
 export const deleteOriginalVideo = (id) => api.delete(`/media/${id}/original`)
