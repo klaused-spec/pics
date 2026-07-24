@@ -1698,12 +1698,16 @@ function AppInner() {
   function advanceSlide(step = 1) {
     setSlideshow((current) => {
       if (!current) return current
-      Animated.timing(slideOpacity, { toValue: 0, duration: 350, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(() => {
+      // Fade out da atual (a próxima já está renderizada atrás — sem flash de fundo)
+      Animated.timing(slideOpacity, { toValue: 0, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
+        if (!finished) return
         setSlideIndex((prev) => {
           const total = current.items.length
           return (prev + step + total) % total
         })
-        Animated.timing(slideOpacity, { toValue: 1, duration: 350, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
+        // Seta opacidade sem animação e depois faz fade in
+        slideOpacity.setValue(0)
+        Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
       })
       return current
     })
@@ -2518,11 +2522,23 @@ function AppInner() {
       <Modal visible={!!slideshow} animationType="fade" onRequestClose={stopSlideshow}>
         <View style={styles.slideScreen}>
           {slideshow && (() => {
+            const total = slideshow.items.length
             const current = slideshow.items[slideIndex]
+            const nextIndex = (slideIndex + 1) % total
+            const next = slideshow.items[nextIndex]
             if (!current) return null
             return (
               <>
-                <Animated.View style={[styles.slideMedia, { opacity: slideOpacity }]}>
+                {/* Imagem/vídeo de fundo (próxima) — pré-carregada invisível */}
+                {next && next.media_type !== 'video' && (
+                  <Image
+                    source={{ uri: next.localUri }}
+                    style={[styles.slideMedia, { position: 'absolute' }]}
+                    resizeMode="contain"
+                  />
+                )}
+                {/* Imagem/vídeo atual — faz fade out na transição */}
+                <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
                   {current.media_type === 'video' ? (
                     <Video
                       source={{ uri: current.localUri }}
@@ -2547,7 +2563,7 @@ function AppInner() {
                   <Text style={styles.slideCloseText}>›</Text>
                 </Pressable>
                 <View style={styles.slideCounter}>
-                  <Text style={styles.slideCounterText}>{slideIndex + 1} / {slideshow.items.length}</Text>
+                  <Text style={styles.slideCounterText}>{slideIndex + 1} / {total}</Text>
                 </View>
               </>
             )
