@@ -33,7 +33,7 @@ if exist "venv\Scripts\activate.bat" (
     echo [WARN] venv nao encontrado. Usando Python global.
 )
 
-echo Iniciando backend em http://127.0.0.1:8000 ...
-"%PYTHONCMD%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+echo Iniciando backend em http://0.0.0.0:8000 ...
+"%PYTHONCMD%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 rem pause
 exit
