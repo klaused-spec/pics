@@ -143,31 +143,42 @@ def get_album_media(
 
 @router.post("/{album_id}/media")
 def add_media_to_album(album_id: int, data: AlbumAddMedia, db: Session = Depends(get_db)):
-    """Adiciona mídias a um álbum."""
+    """Adiciona mídias a um álbum e enfileira otimização das novas."""
+    from app.services.transcode_service import ensure_transcode_jobs, start_album_transcode
+
     album = db.query(Album).filter(Album.id == album_id).first()
     if not album:
         raise HTTPException(status_code=404, detail="Álbum não encontrado")
 
     existing_ids = {m.id for m in album.media_items}
+    new_ids = []
     added = 0
     for media_id in data.media_ids:
         if media_id not in existing_ids:
             media = db.query(Media).filter(Media.id == media_id).first()
             if media:
                 album.media_items.append(media)
+                new_ids.append(media_id)
                 added += 1
 
-    # Define capa automaticamente se não tiver
     if not album.cover_media_id and album.media_items:
         album.cover_media_id = album.media_items[0].id
 
     db.commit()
+
+    # Cria e dispara jobs para as mídias novas
+    if new_ids:
+        jobs = ensure_transcode_jobs(db, album_id, new_ids)
+        pending_ids = [j.id for j in jobs if j.status in ("pending", "failed")]
+        if pending_ids:
+            start_album_transcode(album_id, pending_ids)
+
     return {"added": added, "total": len(album.media_items)}
 
 
 @router.delete("/{album_id}/media")
 def remove_media_from_album(album_id: int, data: AlbumAddMedia, db: Session = Depends(get_db)):
-    """Remove mídias de um álbum."""
+    """Remove mídias de um álbum e apaga arquivos otimizados."""
     album = db.query(Album).filter(Album.id == album_id).first()
     if not album:
         raise HTTPException(status_code=404, detail="Álbum não encontrado")
@@ -178,6 +189,15 @@ def remove_media_from_album(album_id: int, data: AlbumAddMedia, db: Session = De
         if media and media in album.media_items:
             album.media_items.remove(media)
             removed += 1
+            # Remove job e arquivo otimizado
+            job = db.query(AlbumTranscodeJob).filter_by(album_id=album_id, media_id=media_id).first()
+            if job:
+                if job.output_path and os.path.isfile(job.output_path):
+                    try:
+                        os.remove(job.output_path)
+                    except OSError:
+                        pass
+                db.delete(job)
 
     db.commit()
     return {"removed": removed, "total": len(album.media_items)}
@@ -217,25 +237,25 @@ def start_transcode(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Inicia (ou retoma) transcodificação de todos os vídeos do álbum."""
+    """Inicia (ou retoma) otimização de todas as mídias do álbum (fotos + vídeos)."""
     from app.services.transcode_service import ensure_transcode_jobs, start_album_transcode
 
     album = db.query(Album).filter(Album.id == album_id).first()
     if not album:
         raise HTTPException(status_code=404, detail="Álbum não encontrado")
 
-    # Pega IDs de vídeos do álbum
-    video_ids = [
+    # Todas as mídias do álbum (fotos e vídeos)
+    all_ids = [
         row[0]
         for row in db.query(Media.id)
         .join(album_media, Media.id == album_media.c.media_id)
-        .filter(album_media.c.album_id == album_id, Media.media_type == "video")
+        .filter(album_media.c.album_id == album_id)
         .all()
     ]
-    if not video_ids:
-        return {"message": "Nenhum vídeo neste álbum", "jobs": []}
+    if not all_ids:
+        return {"message": "Álbum vazio", "jobs": []}
 
-    jobs = ensure_transcode_jobs(db, album_id, video_ids)
+    jobs = ensure_transcode_jobs(db, album_id, all_ids)
 
     # Dispara apenas os que ainda não estão done
     pending_ids = [j.id for j in jobs if j.status in ("pending", "failed")]
@@ -243,7 +263,7 @@ def start_transcode(
         start_album_transcode(album_id, pending_ids)
 
     return {
-        "message": f"{len(pending_ids)} vídeo(s) enfileirado(s)",
+        "message": f"{len(pending_ids)} mídia(s) enfileirada(s)",
         "total": len(jobs),
         "pending": len(pending_ids),
     }
@@ -260,21 +280,78 @@ def transcode_status(
     return get_album_transcode_status(db, album_id)
 
 
-@router.get("/transcode/video/{job_id}")
-def serve_transcoded_video(
+@router.get("/transcode/file/{job_id}")
+def serve_optimized_file(
     job_id: int,
     request: Request,
     token: Optional[str] = Query(None),
-    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Serve o arquivo mp4 transcodificado de um job."""
+    """Serve o arquivo otimizado (foto JPEG ou vídeo MP4) com suporte a HTTP Range."""
+    from fastapi.responses import StreamingResponse
+    import mimetypes
+
+    # Auth via Bearer ou ?token=
+    from app.core.security import decode_access_token
+    auth = request.headers.get("Authorization", "")
+    t = token or (auth.replace("Bearer ", "") if auth.startswith("Bearer ") else None)
+    if not t:
+        raise HTTPException(status_code=401, detail="Não autenticado")
+    try:
+        decode_access_token(t)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
     job = db.query(AlbumTranscodeJob).filter_by(id=job_id).first()
     if not job or job.status != "done":
-        raise HTTPException(status_code=404, detail="Vídeo transcodificado não disponível")
+        raise HTTPException(status_code=404, detail="Arquivo otimizado não disponível")
     if not job.output_path or not os.path.isfile(job.output_path):
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
-    return FileResponse(job.output_path, media_type="video/mp4")
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    filepath = job.output_path
+    file_size = os.path.getsize(filepath)
+    mime_type = "video/mp4" if filepath.endswith(".mp4") else "image/jpeg"
+
+    range_header = request.headers.get("Range")
+    if not range_header:
+        def _full():
+            with open(filepath, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    yield chunk
+        return StreamingResponse(_full(), media_type=mime_type, headers={
+            "Accept-Ranges": "bytes", "Content-Length": str(file_size),
+        })
+
+    try:
+        range_val = range_header.replace("bytes=", "")
+        start_str, _, end_str = range_val.partition("-")
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+    except ValueError:
+        raise HTTPException(status_code=416, detail="Range inválido")
+
+    if start >= file_size or end >= file_size or start > end:
+        raise HTTPException(status_code=416, detail="Range fora dos limites",
+                            headers={"Content-Range": f"bytes */{file_size}"})
+
+    chunk_size = end - start + 1
+
+    def _range():
+        with open(filepath, "rb") as f:
+            f.seek(start)
+            remaining = chunk_size
+            while remaining > 0:
+                data = f.read(min(1 << 20, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    return StreamingResponse(_range(), status_code=206, media_type=mime_type, headers={
+        "Accept-Ranges": "bytes",
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(chunk_size),
+    })
 
 
 def _media_to_dict(media: Media) -> dict:

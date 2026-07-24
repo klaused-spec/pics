@@ -621,6 +621,9 @@ function AppInner() {
   // Status de transcodificação por álbum: { [albumId]: { status, percent, jobs: [...] } }
   const [albumTranscode, setAlbumTranscode] = useState({})
   const albumTranscodeTimerRef = useRef(null)
+  // Vídeo aguardando transcode para abrir: { item, albumId, pollTimer }
+  const [waitingTranscode, setWaitingTranscode] = useState(null)
+  const waitingTranscodeTimerRef = useRef(null)
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [slideSeconds, setSlideSeconds] = useState(DEFAULT_SLIDE_SECONDS)
@@ -1483,7 +1486,7 @@ function AppInner() {
   // PanResponder vazio — mantido apenas para compatibilidade com código existente
   const viewerPanResponder = useRef({ panHandlers: {} }).current
 
-  async function openItem(item) {
+  async function openItem(item, fromAlbumId = null) {
     setSelected(item)
     selectedRef.current = item
     ScreenOrientation.unlockAsync().catch(() => {})
@@ -1492,9 +1495,43 @@ function AppInner() {
     setFullLoading(true)
     try {
       if (item.media_type === 'video') {
-        // Vídeos: stream direto com HTTP Range — começa a tocar imediatamente.
         const base = normalizeBaseUrl(baseUrl)
         const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+
+        // Se vem de um álbum, verifica se tem otimizado pronto
+        if (fromAlbumId) {
+          const ts = albumTranscode[fromAlbumId]
+          const job = ts?.jobs?.find((j) => j.media_id === item.id)
+
+          if (job?.status === 'done') {
+            // Arquivo otimizado pronto — usa direto
+            setFullUri(`${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`)
+            setFullLoading(false)
+          } else {
+            // Ainda processando — mostra aguardando e abre automaticamente quando pronto
+            setFullLoading(false)
+            setWaitingTranscode({ item, albumId: fromAlbumId })
+            if (waitingTranscodeTimerRef.current) clearInterval(waitingTranscodeTimerRef.current)
+            waitingTranscodeTimerRef.current = setInterval(async () => {
+              try {
+                const res = await fetch(`${base}/api/albums/${fromAlbumId}/transcode/status`, { headers: authHeaders(token) })
+                if (!res.ok) return
+                const data = await res.json()
+                setAlbumTranscode((prev) => ({ ...prev, [fromAlbumId]: data }))
+                const updatedJob = data.jobs?.find((j) => j.media_id === item.id)
+                if (updatedJob?.status === 'done') {
+                  clearInterval(waitingTranscodeTimerRef.current)
+                  waitingTranscodeTimerRef.current = null
+                  setWaitingTranscode(null)
+                  setFullUri(`${base}/api/albums/transcode/file/${updatedJob.job_id}${tokenParam}`)
+                }
+              } catch (_) {}
+            }, 3000)
+          }
+          return
+        }
+
+        // Fora de álbum: stream direto do original
         setFullUri(`${base}/api/media/${item.id}/stream${tokenParam}`)
         setFullLoading(false)
       } else {
@@ -1661,20 +1698,30 @@ function AppInner() {
       Alert.alert('Slideshow', 'Este álbum está vazio.')
       return
     }
-    setSlidePreparing(`Preparando 0/${albumItems.length}`)
+    setSlidePreparing(`Preparando…`)
     const prepared = []
     try {
+      const base = normalizeBaseUrl(baseUrl)
+      const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+      // Pega status de transcode do álbum para usar arquivos otimizados no slideshow
+      const ts = albumTranscode[album.id]
+      const jobByMediaId = {}
+      if (ts?.jobs) {
+        for (const j of ts.jobs) jobByMediaId[j.media_id] = j
+      }
+
       for (let index = 0; index < albumItems.length; index += 1) {
         const item = albumItems[index]
-        setSlidePreparing(`Baixando ${index + 1}/${albumItems.length}`)
+        const job = jobByMediaId[item.id]
         let uri
-        if (item.media_type === 'video') {
-          // Vídeos: stream direto (sem transcodificação HLS — mais fluido para slideshow)
-          const base = normalizeBaseUrl(baseUrl)
-          const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+        if (job?.status === 'done') {
+          // Arquivo otimizado disponível — usa direto (sem buffer, sem espera)
+          uri = `${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`
+        } else if (item.media_type === 'video') {
           uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
-          uri = await ensureFullDownloaded(item)
+          // Thumbnail grande como fallback para fotos ainda não otimizadas
+          uri = `${base}/api/media/${item.id}/thumbnail?size=1080${tokenParam}`
         }
         prepared.push({ ...item, localUri: uri })
       }
@@ -2295,7 +2342,7 @@ function AppInner() {
             renderItem={({ item: rowItems }) => (
               <View style={styles.tileRow}>
                 {rowItems.map((item) => (
-                  <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item)} onLongPress={() => {
+                  <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item, openAlbum.id)} onLongPress={() => {
                     Alert.alert('Remover do álbum', item.filename, [
                       { text: 'Cancelar', style: 'cancel' },
                       { text: 'Remover', style: 'destructive', onPress: () => removeFromAlbum(openAlbum.id, item.id) },
@@ -2311,6 +2358,18 @@ function AppInner() {
                         <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
                       </View>
                     )}
+                    {(() => {
+                      const ts = albumTranscode[openAlbum.id]
+                      const job = ts?.jobs?.find((j) => j.media_id === item.id)
+                      if (!job) return null
+                      if (job.status === 'done') return (
+                        <View style={styles.hdBadge}><Text style={styles.hdBadgeText}>HD</Text></View>
+                      )
+                      if (job.status === 'running') return (
+                        <View style={[styles.hdBadge, { backgroundColor: 'rgba(251,191,36,0.85)' }]}><Text style={styles.hdBadgeText}>⏳</Text></View>
+                      )
+                      return null
+                    })()}
                   </Pressable>
                 ))}
                 {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
@@ -2515,6 +2574,19 @@ function AppInner() {
             <View style={styles.loadingFull}>
               <ActivityIndicator size="large" color="#ffffff" />
               <Text style={styles.viewerStatus}>Baixando arquivo full {Math.round(fullProgress * 100)}%</Text>
+            </View>
+          )}
+          {!fullLoading && !fullUri && waitingTranscode?.item?.id === selected?.id && (
+            <View style={styles.loadingFull}>
+              <ActivityIndicator size="large" color="#93c5fd" />
+              <Text style={styles.viewerStatus}>
+                {(() => {
+                  const ts = albumTranscode[waitingTranscode.albumId]
+                  const job = ts?.jobs?.find((j) => j.media_id === selected?.id)
+                  if (job?.status === 'running') return `⏳ Otimizando… ${ts.percent}%`
+                  return '⏳ Aguardando otimização…'
+                })()}
+              </Text>
             </View>
           )}
           {!fullLoading && fullUri && selected?.media_type === 'image' && (
@@ -2736,6 +2808,10 @@ const styles = StyleSheet.create({
   // Transcode progress bar
   transcodeBar: { backgroundColor: '#1e3a5f', paddingHorizontal: 16, paddingVertical: 8 },
   transcodeBarText: { color: '#93c5fd', fontWeight: '700', fontSize: 13 },
+
+  // Badge HD (otimizado)
+  hdBadge: { position: 'absolute', top: 4, right: 4, backgroundColor: 'rgba(37,99,235,0.85)', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 },
+  hdBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900' },
 
   // Slideshow
   slidePrepare: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15,23,42,0.75)', zIndex: 20 },

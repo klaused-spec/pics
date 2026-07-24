@@ -1,11 +1,14 @@
 """
-Transcodificação de vídeos de álbuns para H.264/AAC em pasta local.
+Otimização de mídias de álbuns para consumo rápido via internet no app mobile.
+
+Fotos  → JPEG 1920px max, qualidade 82, strip EXIF pesado  (salvo como {id}_opt.jpg)
+Vídeos → H.264 + AAC, max 1280px, faststart              (salvo como {id}_opt.mp4)
 
 Fluxo:
-  1. POST /albums/{id}/transcode → cria registros AlbumTranscodeJob para cada vídeo do álbum
-  2. Worker roda em thread pool, processa um vídeo por vez por álbum
-  3. GET /albums/{id}/transcode/status → retorna progresso (% e status por vídeo)
-  4. Quando um vídeo está 'done', o app mobile usa o output_path via endpoint /transcode/video/{job_id}
+  1. POST /albums/{id}/transcode → cria AlbumTranscodeJob para cada mídia do álbum
+  2. Worker processa em sequência (um álbum por vez)
+  3. GET /albums/{id}/transcode/status → progresso
+  4. GET /albums/transcode/video/{job_id} → serve o arquivo otimizado
 """
 import os
 import subprocess
@@ -21,7 +24,7 @@ from app.models import AlbumTranscodeJob, Media
 
 logger = logging.getLogger(__name__)
 
-# Lock por album_id para não paralelizar o mesmo álbum
+# Lock por album_id — processa um álbum por vez para não saturar CPU/disco
 _album_locks: dict[int, threading.Lock] = {}
 _album_locks_lock = threading.Lock()
 
@@ -33,17 +36,16 @@ def _get_album_lock(album_id: int) -> threading.Lock:
         return _album_locks[album_id]
 
 
-def output_path_for(album_id: int, media_id: int, filename: str = "") -> str:
+def output_path_for(album_id: int, media_id: int, media_type: str) -> str:
     base = settings.transcoded_videos_dir
-    stem = Path(filename).stem if filename else str(media_id)
-    name = f"{media_id}_{stem}_transcoded.mp4"
-    return str(Path(base) / str(album_id) / name)
+    ext = ".jpg" if media_type == "image" else ".mp4"
+    return str(Path(base) / str(album_id) / f"{media_id}_opt{ext}")
 
 
-def ensure_transcode_jobs(db: Session, album_id: int, video_media_ids: list[int]) -> list[AlbumTranscodeJob]:
-    """Cria jobs de transcodificação para os vídeos que ainda não têm job."""
+def ensure_transcode_jobs(db: Session, album_id: int, media_ids: list[int]) -> list[AlbumTranscodeJob]:
+    """Cria jobs de otimização para todas as mídias do álbum que ainda não têm job."""
     jobs = []
-    for media_id in video_media_ids:
+    for media_id in media_ids:
         existing = (
             db.query(AlbumTranscodeJob)
             .filter_by(album_id=album_id, media_id=media_id)
@@ -53,12 +55,12 @@ def ensure_transcode_jobs(db: Session, album_id: int, video_media_ids: list[int]
             jobs.append(existing)
             continue
         media_item = db.query(Media).filter_by(id=media_id).first()
-        filename = media_item.filename if media_item else ""
+        media_type = media_item.media_type if media_item else "video"
         job = AlbumTranscodeJob(
             album_id=album_id,
             media_id=media_id,
             status="pending",
-            output_path=output_path_for(album_id, media_id, filename),
+            output_path=output_path_for(album_id, media_id, media_type),
         )
         db.add(job)
         jobs.append(job)
@@ -112,17 +114,14 @@ def get_album_transcode_status(db: Session, album_id: int) -> dict:
     }
 
 
-def _transcode_video(job_id: int) -> None:
-    """Roda ffmpeg para transcodificar um vídeo. Chamado em thread separada."""
+def _optimize_job(job_id: int) -> None:
+    """Otimiza uma mídia (foto ou vídeo) para consumo rápido via internet."""
     db: Session = SessionLocal()
     try:
         job = db.query(AlbumTranscodeJob).filter_by(id=job_id).first()
-        if not job:
-            return
-        if job.status == "done":
+        if not job or job.status == "done":
             return
 
-        # Pega o filepath do vídeo original
         media = db.query(Media).filter_by(id=job.media_id).first()
         if not media:
             job.status = "failed"
@@ -139,46 +138,31 @@ def _transcode_video(job_id: int) -> None:
 
         output = job.output_path
         Path(output).parent.mkdir(parents=True, exist_ok=True)
-
-        # Remove arquivo parcial anterior se existir
         if os.path.exists(output):
             os.remove(output)
 
         job.status = "running"
         db.commit()
 
-        cmd = [
-            settings.ffmpeg_path,
-            "-y",
-            "-i", filepath,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",           # qualidade boa sem peso excessivo
-            "-vf", "scale='min(1280,iw)':-2",  # max 1280px largura, proporcional
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",  # mp4 começa a tocar antes de terminar o download
-            output,
-        ]
+        if media.media_type == "image":
+            _optimize_image(filepath, output)
+        else:
+            _optimize_video(filepath, output)
 
-        logger.info(f"[transcode] job={job_id} media={job.media_id} -> {output}")
-        result = subprocess.run(cmd, capture_output=True, timeout=3600)
-
-        if result.returncode == 0 and os.path.isfile(output):
+        if os.path.isfile(output):
             job.status = "done"
-            logger.info(f"[transcode] job={job_id} concluído")
-            # Marca o registro Media com o caminho do transcoded
+            logger.info(f"[opt] job={job_id} media={job.media_id} done")
             media_rec = db.query(Media).filter_by(id=job.media_id).first()
             if media_rec:
                 media_rec.transcoded_path = output
         else:
             job.status = "failed"
-            job.error_message = result.stderr.decode(errors="replace")[-500:]
-            logger.error(f"[transcode] job={job_id} falhou: {job.error_message}")
+            job.error_message = "Arquivo de saída não gerado"
+            logger.error(f"[opt] job={job_id} falhou")
 
         db.commit()
     except Exception as e:
-        logger.exception(f"[transcode] job={job_id} exceção: {e}")
+        logger.exception(f"[opt] job={job_id} exceção: {e}")
         try:
             job = db.query(AlbumTranscodeJob).filter_by(id=job_id).first()
             if job:
@@ -191,14 +175,49 @@ def _transcode_video(job_id: int) -> None:
         db.close()
 
 
+def _optimize_image(src: str, dst: str) -> None:
+    """Redimensiona foto para 1920px max e salva como JPEG otimizado."""
+    from PIL import Image as PilImage
+    PilImage.MAX_IMAGE_PIXELS = None
+    with PilImage.open(src) as img:
+        img = img.convert("RGB")
+        w, h = img.size
+        max_side = 1920
+        if w > max_side or h > max_side:
+            ratio = min(max_side / w, max_side / h)
+            img = img.resize((int(w * ratio), int(h * ratio)), PilImage.LANCZOS)
+        img.save(dst, "JPEG", quality=82, optimize=True, progressive=True)
+
+
+def _optimize_video(src: str, dst: str) -> None:
+    """Transcodifica vídeo para H.264/AAC com faststart (começa a tocar imediatamente)."""
+    cmd = [
+        settings.ffmpeg_path,
+        "-y",
+        "-i", src,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "23",
+        "-vf", "scale='min(1280,iw)':-2",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        dst,
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=3600)
+    if result.returncode != 0:
+        err = result.stderr.decode(errors="replace")[-500:]
+        raise RuntimeError(f"ffmpeg falhou: {err}")
+
+
 def start_album_transcode(album_id: int, job_ids: list[int]) -> None:
-    """Dispara transcodificação dos jobs em thread dedicada por álbum."""
+    """Dispara otimização dos jobs em thread dedicada por álbum."""
 
     def _worker():
         lock = _get_album_lock(album_id)
         with lock:
             for job_id in job_ids:
-                _transcode_video(job_id)
+                _optimize_job(job_id)
 
-    t = threading.Thread(target=_worker, daemon=True, name=f"transcode-album-{album_id}")
+    t = threading.Thread(target=_worker, daemon=True, name=f"opt-album-{album_id}")
     t.start()
