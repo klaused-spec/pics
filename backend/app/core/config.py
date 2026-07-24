@@ -91,7 +91,9 @@ class Settings(BaseSettings):
         return result
 
     # Banco de dados
-    database_url: str = "sqlite:///./pics.db"
+    # Pode ser sobrescrito no .env com DATABASE_URL=sqlite:///C:/caminho/absoluto/pics.db
+    # O default usa caminho absoluto relativo a este arquivo para não depender do cwd.
+    database_url: str = "sqlite:///" + str(Path(__file__).parent.parent.parent / "pics.db").replace("\\", "/")
 
     # Servidor
     host: str = "0.0.0.0"

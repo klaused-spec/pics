@@ -22,6 +22,28 @@ from app.services.organizer import compute_sha256
 logger = logging.getLogger(__name__)
 
 
+class StorageUnavailableError(RuntimeError):
+    """Levantada quando um ou mais diretórios críticos estão indisponíveis."""
+    def __init__(self, unavailable: list[str]):
+        self.unavailable = unavailable
+        super().__init__(
+            f"Diretórios indisponíveis: {', '.join(unavailable)}. "
+            "Operação cancelada para proteger o banco de dados."
+        )
+
+
+def _require_storage():
+    """
+    Verifica se todos os diretórios críticos estão acessíveis.
+    Lança StorageUnavailableError se algum estiver indisponível.
+    Deve ser chamada no início de qualquer job que toca arquivos.
+    """
+    from app.services.mount_checker import all_critical_dirs_available
+    ok, missing = all_critical_dirs_available()
+    if not ok:
+        raise StorageUnavailableError(missing)
+
+
 def safe_commit(db: Session, context: str = "") -> bool:
     """Attempt to commit the session; rollback on failure and log error."""
     try:
@@ -79,6 +101,7 @@ def run_rclone_download_job() -> dict:
     Deduplica pré-download por nome de arquivo (consultando o banco) e deixa o
     scan/organizador organizar e deduplicar por SHA256 o que foi baixado.
     """
+    _require_storage()
     from app.services.rclone_sync import run_rclone_download
 
     job_id = _create_job("rclone_download")
@@ -157,6 +180,7 @@ def run_scan_and_organize() -> int:
     """
     Job principal: escaneia source + library_folders + organized e processa arquivos novos.
     """
+    _require_storage()
     with media_file_operation_lock:
         return _run_scan_and_organize_locked()
 
@@ -311,6 +335,7 @@ def run_ai_processing(batch_size: int = None) -> int:
     """
     Processa mídias pendentes com Azure OpenAI Vision.
     """
+    _require_storage()
     if not settings.ai_processing_enabled:
         logger.info("Processamento IA ignorado: AI_PROCESSING_ENABLED=false")
         return 0
@@ -370,6 +395,7 @@ def run_face_detection(batch_size: int = None) -> int:
     """
     Detecta rostos em mídias que ainda não foram processadas.
     """
+    _require_storage()
     if batch_size is None:
         batch_size = settings.batch_size
 
@@ -769,6 +795,7 @@ def run_sync_job() -> dict:
 
 def run_purge_missing_job() -> dict:
     """Job wrapper para registrar e executar purge missing."""
+    _require_storage()
     job_id = _create_job("purge_missing")
     try:
         result = run_purge_missing()

@@ -65,7 +65,35 @@ function networkErrorMessage(error, url) {
   if (/network request failed/i.test(error.message)) {
     return `Falha de rede tentando conectar em ${url}. Confira se o celular acessa esse endereco e se ele comeca com http:// ou https://.`
   }
+  // Mensagem amigável para unidade indisponível (503 do backend)
+  if (error.storageUnavailable) {
+    const dirs = error.unavailableDirs?.length ? `\n${error.unavailableDirs.join('\n')}` : ''
+    return `Servidor sem acesso às unidades de armazenamento. Operação bloqueada para proteger o banco de dados.${dirs}`
+  }
   return error.message
+}
+
+// Lê o corpo de uma resposta HTTP e lança erro interpretado.
+// Para 503 storage_unavailable, decora o erro com .storageUnavailable = true.
+async function throwHttpError(response) {
+  let detail = `Erro ${response.status}`
+  let storageUnavailable = false
+  let unavailableDirs = []
+  try {
+    const body = await response.json()
+    if (body?.detail?.error === 'storage_unavailable') {
+      storageUnavailable = true
+      unavailableDirs = body.detail.unavailable || []
+      detail = body.detail.message || 'Unidade indisponível'
+    } else if (typeof body?.detail === 'string') {
+      detail = body.detail
+    }
+  } catch (_) {}
+  const err = new Error(detail)
+  err.status = response.status
+  err.storageUnavailable = storageUnavailable
+  err.unavailableDirs = unavailableDirs
+  throw err
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
@@ -900,12 +928,7 @@ function AppInner() {
         body: JSON.stringify({ email, password }),
       })
       if (!response.ok) {
-        let detail = 'Login recusado'
-        try {
-          const errorData = await response.json()
-          detail = errorData.detail || detail
-        } catch (_) {}
-        throw new Error(`${detail} (${response.status})`)
+        await throwHttpError(response)
       }
       const data = await response.json()
       setToken(data.access_token)
@@ -944,7 +967,7 @@ function AppInner() {
       }
       try {
         const response = await fetchWithTimeout(url, { headers: authHeaders(activeToken) }, 15000)
-        if (!response.ok) throw new Error(`Manifesto falhou (${response.status})`)
+        if (!response.ok) await throwHttpError(response)
         // Timeout também na leitura do corpo para não ficar pendurado se o stream travar.
         const bodyTimeout = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Timeout lendo manifesto')), 15000)

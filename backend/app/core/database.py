@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy import text
@@ -5,6 +7,12 @@ from sqlalchemy import text
 from app.core.config import settings
 
 _is_sqlite = "sqlite" in settings.database_url
+
+# Para SQLite, garante que o diretório do banco existe antes de criar o engine.
+if _is_sqlite:
+    _db_path = settings.database_url.replace("sqlite:///", "").replace("sqlite://", "")
+    if _db_path:
+        Path(_db_path).parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     settings.database_url,

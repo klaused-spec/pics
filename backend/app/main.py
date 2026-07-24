@@ -158,4 +158,11 @@ app.include_router(mobile_router, prefix="/api")
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "service": "PICS"}
+    from app.services.mount_checker import get_storage_status
+    storage = get_storage_status()
+    status = "ok" if storage["all_available"] else "storage_unavailable"
+    return {
+        "status": status,
+        "service": "PICS",
+        "storage": storage,
+    }

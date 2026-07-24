@@ -27,6 +27,22 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
 
 
+def _assert_storage_available():
+    """Lança HTTP 503 se algum diretório crítico estiver indisponível."""
+    from app.services.mount_checker import all_critical_dirs_available
+    ok, missing = all_critical_dirs_available()
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "storage_unavailable",
+                "message": "Uma ou mais unidades/diretórios estão indisponíveis. "
+                           "Operação bloqueada para proteger o banco de dados.",
+                "unavailable": missing,
+            },
+        )
+
+
 @router.get("/")
 def list_jobs(
     current_user: dict = Depends(get_current_user),
@@ -65,6 +81,7 @@ def start_scan(
     db: Session = Depends(get_db),
 ):
     """Inicia job de scan e organização de novos arquivos."""
+    _assert_storage_available()
     background_tasks.add_task(run_scan_and_organize)
     return {"message": "Job de scan iniciado em background"}
 
@@ -78,6 +95,7 @@ def start_rclone_download(
     """Baixa arquivos dos remotes (OneDrive) via rclone para o source_dir."""
     if not settings.rclone_enabled:
         raise HTTPException(status_code=403, detail="rclone desativado nas configurações (rclone_enabled=false)")
+    _assert_storage_available()
     background_tasks.add_task(run_rclone_download_job)
     return {"message": "Job de download rclone iniciado em background"}
 
@@ -101,7 +119,7 @@ def start_ai_processing(
     """Inicia processamento com Azure OpenAI."""
     if not settings.ai_processing_enabled:
         raise HTTPException(status_code=403, detail="Processamento por IA desativado nas configurações")
-
+    _assert_storage_available()
     background_tasks.add_task(run_ai_processing, batch_size)
     return {"message": f"Job de IA iniciado (batch={batch_size})"}
 
@@ -114,6 +132,7 @@ def start_face_detection(
     db: Session = Depends(get_db),
 ):
     """Inicia detecção facial."""
+    _assert_storage_available()
     background_tasks.add_task(run_face_detection, batch_size)
     return {"message": f"Job de detecção facial iniciado (batch={batch_size})"}
 
@@ -147,6 +166,7 @@ def start_full_pipeline(
     db: Session = Depends(get_db),
 ):
     """Executa pipeline completo: sync → scan → organizar → IA → faces. Processa TUDO pendente."""
+    _assert_storage_available()
 
     def full_pipeline():
         run_sync_job()
@@ -166,6 +186,7 @@ def start_sync(
     db: Session = Depends(get_db),
 ):
     """Sincroniza banco com pastas: detecta movidos, apagados e novos."""
+    _assert_storage_available()
     background_tasks.add_task(run_sync_job)
     return {"message": "Sync iniciado em background"}
 
@@ -175,18 +196,11 @@ def check_mounts_status(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Verifica status de todos os mount points (WSL/Linux) e tenta recuperar os stale."""
-    from app.services.mount_checker import check_and_recover_library_mounts
-    results = check_and_recover_library_mounts(settings.library_folders)
-    
-    summary = {
-        "total": len(results),
-        "ok": sum(1 for r in results.values() if r["status"] == "ok"),
-        "stale": sum(1 for r in results.values() if r["status"] == "stale"),
-        "recovered": sum(1 for r in results.values() if r.get("recovered", False)),
-        "details": results,
-    }
-    return summary
+    """Verifica disponibilidade de todos os diretórios críticos do app."""
+    from app.services.mount_checker import get_storage_status, invalidate_cache
+    invalidate_cache()  # força recheck imediato
+    status = get_storage_status()
+    return status
 
 
 @router.get("/audit")
@@ -206,6 +220,7 @@ def start_purge_missing(
     db: Session = Depends(get_db),
 ):
     """Remove do banco todos os arquivos marcados como missing (não encontrados em disco)."""
+    _assert_storage_available()
     from app.models.models import Media
     missing_count = db.query(Media).filter(Media.missing_since.isnot(None)).count()
     if missing_count == 0:
