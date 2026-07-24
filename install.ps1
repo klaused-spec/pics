@@ -68,7 +68,7 @@ Ok "Dependencias instaladas"
 
 # ─── 3. Caddy ─────────────────────────────────────────────────────────────────
 Header "3/7  Caddy (reverse proxy)"
-$caddyDir = "C:\caddy"
+$caddyDir = Join-Path $ROOT "tools\caddy"
 $caddyExe = "$caddyDir\caddy.exe"
 
 if (Test-Path $caddyExe) {
@@ -86,12 +86,13 @@ if (Test-Path $caddyExe) {
         Ok "Caddy instalado em $caddyExe"
     } catch {
         Err "Falha ao baixar Caddy: $_"
-        Err "Baixe manualmente em https://caddyserver.com/download e coloque o caddy.exe em C:\caddy\"
+        Err "Baixe manualmente em https://caddyserver.com/download e coloque o caddy.exe em tools\caddy\"
     }
 }
 
-# Cria pasta de certs se nao existir
+# Cria pasta de certs
 New-Item -ItemType Directory -Force -Path "$caddyDir\certs" | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $ROOT "tools\caddy\certs") | Out-Null
 
 # ─── 4. FFmpeg ────────────────────────────────────────────────────────────────
 Header "4/7  FFmpeg"
@@ -235,7 +236,7 @@ Write-Host @"
     1. Backend:   cd $ROOT\backend
                   venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-    2. Caddy:     C:\caddy\caddy.exe run --config "$ROOT\Caddyfile"
+    2. Caddy:     $ROOT\tools\caddy\caddy.exe run --config "$ROOT\Caddyfile"
 
   Ou use o start.bat (mata tudo e sobe os dois):
                   $ROOT\start.bat
