@@ -581,6 +581,8 @@ function AppInner() {
 
   const [treeExpanded, setTreeExpanded] = useState({})
   const [treeSelected, setTreeSelected] = useState(null)
+  const treeListRef = useRef(null)
+  const treeScrollOffset = useRef(0)
 
   const [albums, setAlbums] = useState([])
   const [openAlbumId, setOpenAlbumId] = useState(null)
@@ -628,7 +630,7 @@ function AppInner() {
       if (slideshow) { stopSlideshow(); return true }
       if (selected) { setSelected(null); return true }
       if (selectMode) { cancelSelection(); return true }
-      if (activeTab === 'tree' && treeSelected) { setTreeSelected(null); return true }
+      if (activeTab === 'tree' && treeSelected) { setTreeSelected(null); setTimeout(() => treeListRef.current?.scrollToOffset({ offset: treeScrollOffset.current, animated: false }), 50); return true }
       if (activeTab === 'albums' && openAlbumId) { setOpenAlbumId(null); return true }
       if (activeTab !== 'photos') { setActiveTab('photos'); return true }
       return false
@@ -2241,9 +2243,12 @@ function AppInner() {
             <Text style={styles.topTitle}>Pastas</Text>
           </View>
           <FlatList
+            ref={treeListRef}
             data={treeMonths}
             keyExtractor={(node) => node.key}
             contentContainerStyle={{ paddingBottom: 24, paddingHorizontal: 12 }}
+            onScroll={(e) => { treeScrollOffset.current = e.nativeEvent.contentOffset.y }}
+            scrollEventThrottle={16}
             ListEmptyComponent={<View style={styles.emptyState}><Text style={styles.emptyEmoji}>📂</Text><Text style={styles.emptyTitle}>Sem dados</Text><Text style={styles.emptyText}>Sincronize a biblioteca primeiro.</Text></View>}
             renderItem={({ item: node }) => {
               const expanded = !!treeExpanded[node.key]
@@ -2283,7 +2288,7 @@ function AppInner() {
       {activeTab === 'tree' && treeSelected && (
         <View style={styles.tabContent}>
           <View style={styles.albumHeaderBar}>
-            <Pressable style={styles.backButton} onPress={() => setTreeSelected(null)}><Text style={styles.backButtonText}>← Pastas</Text></Pressable>
+            <Pressable style={styles.backButton} onPress={() => { setTreeSelected(null); setTimeout(() => treeListRef.current?.scrollToOffset({ offset: treeScrollOffset.current, animated: false }), 50) }}><Text style={styles.backButtonText}>← Pastas</Text></Pressable>
             <Text style={[styles.topTitle, { flex: 1, fontSize: 18 }]} numberOfLines={1}>{treeSelectedTitle}</Text>
           </View>
           <FlatList
@@ -2374,7 +2379,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.7</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.8</Text>
             </View>
           )}
         />
