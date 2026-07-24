@@ -992,6 +992,7 @@ def _media_sync_item(media: Media, base_url: str, thumbnail_size: int) -> dict:
         "thumbnail_url": f"{base_url}/api/media/{media.id}/thumbnail?size={thumbnail_size}",
         "file_url": f"{base_url}/api/media/{media.id}/file",
         "stream_url": f"{base_url}/api/media/{media.id}/stream" if media.media_type == "video" else None,
+        "is_transcoded": bool(media.transcoded_path and os.path.isfile(media.transcoded_path)),
     }
 
 
@@ -1100,7 +1101,12 @@ def stream_media(
     if not media:
         raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-    filepath = media.organized_path or media.original_path
+    # Se existe versão transcodificada, serve ela (melhor compatibilidade e performance)
+    raw_path = media.organized_path or media.original_path
+    if media.transcoded_path and os.path.isfile(media.transcoded_path):
+        filepath = media.transcoded_path
+    else:
+        filepath = raw_path
     if not filepath or not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 

@@ -87,6 +87,7 @@ class Media(Base):
     is_duplicate = Column(Boolean, default=False, index=True)
     duplicate_of_id = Column(Integer, ForeignKey("media.id"), nullable=True)
     missing_since = Column(DateTime, nullable=True)  # Quando o arquivo sumiu do disco
+    transcoded_path = Column(String, nullable=True)  # Caminho do mp4 transcodificado (serve via /stream)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -186,6 +187,23 @@ class ProcessingJob(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class AlbumTranscodeJob(Base):
+    """Rastreia transcodificação de vídeos de um álbum para pasta local."""
+    __tablename__ = "album_transcode_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    album_id = Column(Integer, ForeignKey("albums.id"), nullable=False, index=True)
+    media_id = Column(Integer, ForeignKey("media.id"), nullable=False, index=True)
+    status = Column(String, default="pending")  # pending | running | done | failed
+    output_path = Column(String, nullable=True)   # caminho do arquivo transcodificado
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    album = relationship("Album", foreign_keys=[album_id])
+    media = relationship("Media", foreign_keys=[media_id])
 
 
 class AiCache(Base):

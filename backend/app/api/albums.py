@@ -1,16 +1,18 @@
 """
 Endpoints de álbuns: CRUD e gerenciamento de mídias.
 """
+import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models import Album, Media, album_media
+from app.models import Album, Media, AlbumTranscodeJob, album_media
 
 router = APIRouter(prefix="/albums", tags=["albums"])
 
@@ -207,6 +209,72 @@ def _album_to_dict(album: Album, db: Session, include_items: bool = False) -> di
         result["item_ids"] = item_ids
 
     return result
+
+
+@router.post("/{album_id}/transcode")
+def start_transcode(
+    album_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Inicia (ou retoma) transcodificação de todos os vídeos do álbum."""
+    from app.services.transcode_service import ensure_transcode_jobs, start_album_transcode
+
+    album = db.query(Album).filter(Album.id == album_id).first()
+    if not album:
+        raise HTTPException(status_code=404, detail="Álbum não encontrado")
+
+    # Pega IDs de vídeos do álbum
+    video_ids = [
+        row[0]
+        for row in db.query(Media.id)
+        .join(album_media, Media.id == album_media.c.media_id)
+        .filter(album_media.c.album_id == album_id, Media.media_type == "video")
+        .all()
+    ]
+    if not video_ids:
+        return {"message": "Nenhum vídeo neste álbum", "jobs": []}
+
+    jobs = ensure_transcode_jobs(db, album_id, video_ids)
+
+    # Dispara apenas os que ainda não estão done
+    pending_ids = [j.id for j in jobs if j.status in ("pending", "failed")]
+    if pending_ids:
+        start_album_transcode(album_id, pending_ids)
+
+    return {
+        "message": f"{len(pending_ids)} vídeo(s) enfileirado(s)",
+        "total": len(jobs),
+        "pending": len(pending_ids),
+    }
+
+
+@router.get("/{album_id}/transcode/status")
+def transcode_status(
+    album_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retorna progresso da transcodificação do álbum."""
+    from app.services.transcode_service import get_album_transcode_status
+    return get_album_transcode_status(db, album_id)
+
+
+@router.get("/transcode/video/{job_id}")
+def serve_transcoded_video(
+    job_id: int,
+    request: Request,
+    token: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Serve o arquivo mp4 transcodificado de um job."""
+    job = db.query(AlbumTranscodeJob).filter_by(id=job_id).first()
+    if not job or job.status != "done":
+        raise HTTPException(status_code=404, detail="Vídeo transcodificado não disponível")
+    if not job.output_path or not os.path.isfile(job.output_path):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    return FileResponse(job.output_path, media_type="video/mp4")
 
 
 def _media_to_dict(media: Media) -> dict:

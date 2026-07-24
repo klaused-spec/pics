@@ -618,6 +618,9 @@ function AppInner() {
   // O álbum pode conter mídias que NÃO estão na lista sincronizada `items`
   // (duplicadas/não-organizadas), então buscamos direto do servidor ao abrir.
   const [albumMedia, setAlbumMedia] = useState({})
+  // Status de transcodificação por álbum: { [albumId]: { status, percent, jobs: [...] } }
+  const [albumTranscode, setAlbumTranscode] = useState({})
+  const albumTranscodeTimerRef = useRef(null)
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [slideSeconds, setSlideSeconds] = useState(DEFAULT_SLIDE_SECONDS)
@@ -1731,6 +1734,50 @@ function AppInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openAlbumId])
 
+  // Ao abrir um álbum, dispara transcodificação e faz polling de status
+  useEffect(() => {
+    if (albumTranscodeTimerRef.current) clearInterval(albumTranscodeTimerRef.current)
+    albumTranscodeTimerRef.current = null
+    if (!openAlbumId || !token || !baseUrl) return
+
+    const albumId = openAlbumId
+
+    async function startAndPoll() {
+      const base = normalizeBaseUrl(baseUrl)
+      const headers = authHeaders(token)
+      // Dispara transcodificação (idempotente — não reinicia o que já está done)
+      try {
+        await fetch(`${base}/api/albums/${albumId}/transcode`, { method: 'POST', headers })
+      } catch (_) {}
+
+      // Busca status inicial
+      async function fetchStatus() {
+        try {
+          const res = await fetch(`${base}/api/albums/${albumId}/transcode/status`, { headers })
+          if (!res.ok) return
+          const data = await res.json()
+          setAlbumTranscode((prev) => ({ ...prev, [albumId]: data }))
+          // Para de fazer polling quando tudo está done ou falhou
+          if (data.status === 'done' || data.status === 'none' || data.status === 'failed') {
+            if (albumTranscodeTimerRef.current) clearInterval(albumTranscodeTimerRef.current)
+            albumTranscodeTimerRef.current = null
+          }
+        } catch (_) {}
+      }
+
+      await fetchStatus()
+      albumTranscodeTimerRef.current = setInterval(fetchStatus, 5000)
+    }
+
+    startAndPoll()
+
+    return () => {
+      if (albumTranscodeTimerRef.current) clearInterval(albumTranscodeTimerRef.current)
+      albumTranscodeTimerRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openAlbumId])
+
   const groupedLabel = useMemo(() => {
     if (!items.length) return 'Nenhuma mídia offline ainda'
     const first = items[0]
@@ -2216,6 +2263,19 @@ function AppInner() {
               <Text style={styles.albumPlayText}>▶</Text>
             </Pressable>
           </View>
+          {(() => {
+            const ts = albumTranscode[openAlbum.id]
+            if (!ts || ts.status === 'none' || ts.status === 'done') return null
+            return (
+              <View style={styles.transcodeBar}>
+                <Text style={styles.transcodeBarText}>
+                  {ts.status === 'failed'
+                    ? '⚠ Falha ao transcodificar vídeos'
+                    : `⏳ Otimizando vídeos… ${ts.percent}%`}
+                </Text>
+              </View>
+            )
+          })()}
           <FlatList
             data={chunkItems(
               (albumMedia[openAlbum.id] && albumMedia[openAlbum.id].length)
@@ -2672,6 +2732,10 @@ const styles = StyleSheet.create({
   albumHeaderBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingTop: 12 },
   backButton: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#eef2f7' },
   backButtonText: { color: '#2563eb', fontWeight: '800' },
+
+  // Transcode progress bar
+  transcodeBar: { backgroundColor: '#1e3a5f', paddingHorizontal: 16, paddingVertical: 8 },
+  transcodeBarText: { color: '#93c5fd', fontWeight: '700', fontSize: 13 },
 
   // Slideshow
   slidePrepare: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15,23,42,0.75)', zIndex: 20 },
