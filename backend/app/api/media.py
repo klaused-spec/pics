@@ -992,7 +992,10 @@ def _media_sync_item(media: Media, base_url: str, thumbnail_size: int) -> dict:
         "thumbnail_url": f"{base_url}/api/media/{media.id}/thumbnail?size={thumbnail_size}",
         "file_url": f"{base_url}/api/media/{media.id}/file",
         "stream_url": f"{base_url}/api/media/{media.id}/stream" if media.media_type == "video" else None,
-        "is_transcoded": bool(media.transcoded_path and os.path.isfile(media.transcoded_path)),
+        "is_transcoded": bool(
+            (media.transcoded_path and os.path.isfile(media.transcoded_path))
+            or (filepath and os.path.isfile(str(Path(filepath).parent / (Path(filepath).stem + "_transcoded.mp4"))))
+        ),
     }
 
 
@@ -1101,12 +1104,18 @@ def stream_media(
     if not media:
         raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-    # Se existe versão transcodificada, serve ela (melhor compatibilidade e performance)
+    # Se existe versão transcodificada, serve ela (melhor compatibilidade e performance).
+    # Verifica dois locais: campo transcoded_path no DB (transcode de álbum) e
+    # o caminho padrão _transcoded.mp4 na mesma pasta (transcode sob demanda da webapp).
     raw_path = media.organized_path or media.original_path
+    filepath = raw_path
     if media.transcoded_path and os.path.isfile(media.transcoded_path):
         filepath = media.transcoded_path
-    else:
-        filepath = raw_path
+    elif raw_path:
+        from app.services.transcoder import get_transcoded_path as _get_tp
+        _tp = _get_tp(raw_path)
+        if os.path.isfile(_tp):
+            filepath = _tp
     if not filepath or not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
