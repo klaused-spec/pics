@@ -49,16 +49,30 @@ Ok "$pyVer encontrado ($pyCmd)"
 # ─── 2. Venv + requirements ───────────────────────────────────────────────────
 Header "2/7  Ambiente virtual Python (venv)"
 $venvPath = Join-Path $ROOT "backend\venv"
-if (-not (Test-Path $venvPath)) {
-    Info "Criando venv em $venvPath ..."
+$python   = Join-Path $venvPath "Scripts\python.exe"
+$pip      = Join-Path $venvPath "Scripts\pip.exe"
+
+# Verifica se o venv existente funciona neste PC (caminhos podem ser de outra maquina)
+$venvOk = $false
+if (Test-Path $python) {
+    try {
+        $testOut = & $python --version 2>&1
+        if ($testOut -match 'Python 3\.') { $venvOk = $true }
+    } catch {}
+}
+
+if (-not $venvOk) {
+    if (Test-Path $venvPath) {
+        Info "venv existente invalido (veio de outra maquina). Recriando ..."
+        Remove-Item $venvPath -Recurse -Force
+    } else {
+        Info "Criando venv em $venvPath ..."
+    }
     & $pyCmd -m venv $venvPath
     Ok "venv criado"
 } else {
-    Ok "venv ja existe"
+    Ok "venv ja existe e funciona"
 }
-
-$pip = Join-Path $venvPath "Scripts\pip.exe"
-$python = Join-Path $venvPath "Scripts\python.exe"
 
 Info "Atualizando pip ..."
 & $python -m pip install --upgrade pip --quiet
