@@ -40,10 +40,18 @@ foreach ($candidate in @('python', 'python3', 'py')) {
 }
 if (-not $pyCmd) {
     Err "Python 3 nao encontrado no PATH."
-    Err "Instale em https://www.python.org/downloads/ e marque 'Add to PATH'."
+    Err "Instale Python 3.12 em https://www.python.org/downloads/ e marque 'Add to PATH'."
     exit 1
 }
 $pyVer = (& $pyCmd --version 2>&1).ToString().Trim()
+
+# Verifica versao compativel (3.10, 3.11, 3.12 — numpy/insightface tem wheels prontas)
+if ($pyVer -match 'Python 3\.(1[3-9]|[2-9]\d)') {
+    Err "$pyVer detectado. As dependencias (numpy, insightface) requerem Python 3.10-3.12."
+    Err "Instale Python 3.12: winget install --id Python.Python.3.12 --accept-package-agreements"
+    Err "Depois rode: py -3.12 -m venv backend\venv"
+    exit 1
+}
 Ok "$pyVer encontrado ($pyCmd)"
 
 # ─── 2. Venv + requirements ───────────────────────────────────────────────────
