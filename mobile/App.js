@@ -1231,7 +1231,7 @@ function AppInner() {
             } catch (_) {}
             pendingWrites--
             done++
-            if (done % 500 === 0) {
+            if (done % 2000 === 0) {
               setOfflineStatus(`Importando… ${done}`)
               await new Promise((r) => setTimeout(r, 0)) // deixa a UI respirar
             }
