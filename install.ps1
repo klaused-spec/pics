@@ -38,21 +38,58 @@ foreach ($candidate in @('python', 'python3', 'py')) {
         if ($ver -match 'Python 3\.') { $pyCmd = $candidate; break }
     } catch {}
 }
-if (-not $pyCmd) {
-    Err "Python 3 nao encontrado no PATH."
-    Err "Instale Python 3.12 em https://www.python.org/downloads/ e marque 'Add to PATH'."
-    exit 1
+function Install-Python312 {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Err "winget nao encontrado. Instale Python 3.12 manualmente em https://www.python.org/downloads/"
+        exit 1
+    }
+    Info "Instalando Python 3.12 via winget ..."
+    winget install --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+    # Recarrega PATH
+    $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
 }
+
+if (-not $pyCmd) {
+    Info "Python 3 nao encontrado no PATH."
+    Install-Python312
+    # Tenta novamente apos instalar
+    foreach ($candidate in @('py', 'python', 'python3')) {
+        try {
+            $ver = & $candidate --version 2>&1
+            if ($ver -match 'Python 3\.') { $pyCmd = $candidate; break }
+        } catch {}
+    }
+    if (-not $pyCmd) {
+        Err "Python ainda nao encontrado. Feche e reabra o terminal e rode install.ps1 novamente."
+        exit 1
+    }
+}
+
 $pyVer = (& $pyCmd --version 2>&1).ToString().Trim()
 
-# Verifica versao compativel (3.10, 3.11, 3.12 — numpy/insightface tem wheels prontas)
+# Verifica versao compativel (3.10-3.12 — numpy/insightface tem wheels prontas)
+# pyArgs: argumentos extras para o interpretador (ex: -3.12 para py launcher)
+$pyArgs = @()
+
 if ($pyVer -match 'Python 3\.(1[3-9]|[2-9]\d)') {
-    Err "$pyVer detectado. As dependencias (numpy, insightface) requerem Python 3.10-3.12."
-    Err "Instale Python 3.12: winget install --id Python.Python.3.12 --accept-package-agreements"
-    Err "Depois rode: py -3.12 -m venv backend\venv"
-    exit 1
+    Info "$pyVer incompativel (numpy/insightface requerem 3.10-3.12). Instalando Python 3.12 ..."
+    Install-Python312
+    # Tenta py launcher com versao explicita
+    try {
+        $ver = & py -3.12 --version 2>&1
+        if ($ver -match 'Python 3\.12') {
+            $pyCmd  = 'py'
+            $pyArgs = @('-3.12')
+            $pyVer  = $ver.ToString().Trim()
+        }
+    } catch {}
+    if ($pyArgs.Count -eq 0) {
+        Err "Python 3.12 instalado mas nao encontrado. Feche e reabra o terminal e rode install.ps1 novamente."
+        exit 1
+    }
 }
-Ok "$pyVer encontrado ($pyCmd)"
+Ok "$pyVer encontrado"
 
 # ─── 2. Venv + requirements ───────────────────────────────────────────────────
 Header "2/7  Ambiente virtual Python (venv)"
@@ -76,7 +113,7 @@ if (-not $venvOk) {
     } else {
         Info "Criando venv em $venvPath ..."
     }
-    & $pyCmd -m venv $venvPath
+    & $pyCmd @pyArgs -m venv $venvPath
     Ok "venv criado"
 } else {
     Ok "venv ja existe e funciona"
