@@ -1362,27 +1362,29 @@ function AppInner() {
   }
 
   // Touch handlers diretos (mais confiáveis que PanResponder para pinch no Android)
-  const touchStartRef = useRef({}) // id -> {x, y}
-  const swipeStartRef = useRef(null) // {x, y} quando 1 dedo
+  const panGestureRef = useRef(null) // {startTx, startTy, startX, startY} para pan
 
   function handleTouchStart(evt) {
     const touches = evt.nativeEvent.touches
-    for (const t of touches) touchStartRef.current[t.identifier] = { x: t.pageX, y: t.pageY }
-    if (touches.length === 1) {
-      swipeStartRef.current = { x: touches[0].pageX, y: touches[0].pageY }
-      // Duplo tap
-      const now = Date.now()
-      const z = viewerZoomRef.current
-      if (now - z.lastTap < 300) { resetViewerZoom(); z.lastTap = 0 }
-      else z.lastTap = now
-    }
+    const z = viewerZoomRef.current
     if (touches.length >= 2) {
-      swipeStartRef.current = null
-      const z = viewerZoomRef.current
+      // Início do pinch — registra distância inicial
       const t0 = touches[0]; const t1 = touches[1]
       z.pinchStart = Math.hypot(t0.pageX - t1.pageX, t0.pageY - t1.pageY)
       z.pinchScaleStart = z.scale
-      z.lastDx = 0; z.lastDy = 0
+      panGestureRef.current = null
+    } else if (touches.length === 1) {
+      // Duplo tap
+      const now = Date.now()
+      if (now - z.lastTap < 300) { resetViewerZoom(); z.lastTap = 0 }
+      else z.lastTap = now
+      // Guarda ponto de início para swipe e pan
+      panGestureRef.current = {
+        startX: touches[0].pageX,
+        startY: touches[0].pageY,
+        startTx: z.tx,
+        startTy: z.ty,
+      }
     }
   }
 
@@ -1397,17 +1399,13 @@ function AppInner() {
       const newScale = Math.max(1, Math.min(5, z.pinchScaleStart * (dist / z.pinchStart)))
       z.scale = newScale
       viewerScale.setValue(newScale)
-    } else if (touches.length === 1 && z.scale > 1.05) {
-      // Pan com zoom ativo
+    } else if (touches.length === 1 && z.scale > 1.05 && panGestureRef.current) {
+      // Pan com zoom ativo — relativo ao ponto de início do gesto
       const t = touches[0]
-      const start = touchStartRef.current[t.identifier]
-      if (!start) return
-      const dx = t.pageX - start.x
-      const dy = t.pageY - start.y
-      const newTx = z.tx + dx - (z.lastDx || 0)
-      const newTy = z.ty + dy - (z.lastDy || 0)
+      const { startX, startY, startTx, startTy } = panGestureRef.current
+      const newTx = startTx + (t.pageX - startX)
+      const newTy = startTy + (t.pageY - startY)
       z.tx = newTx; z.ty = newTy
-      z.lastDx = dx; z.lastDy = dy
       viewerTranslateX.setValue(newTx)
       viewerTranslateY.setValue(newTy)
     }
@@ -1416,31 +1414,37 @@ function AppInner() {
   function handleTouchEnd(evt) {
     const z = viewerZoomRef.current
     const remaining = evt.nativeEvent.touches.length
-    if (remaining === 0) {
+    if (remaining >= 2) return
+    if (remaining === 1) {
+      // Voltou para 1 dedo após pinch — reinicia referência de pan
       z.pinchStart = null
-      z.lastDx = 0; z.lastDy = 0
-      touchStartRef.current = {}
-      if (z.scale > 1.05) {
-        // Snap se foi longe demais
-        const limit = 200 * (z.scale - 1)
-        const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
-        const clampedTy = Math.max(-limit, Math.min(limit, z.ty))
-        z.tx = clampedTx; z.ty = clampedTy
-        Animated.parallel([
-          Animated.spring(viewerTranslateX, { toValue: clampedTx, useNativeDriver: true }),
-          Animated.spring(viewerTranslateY, { toValue: clampedTy, useNativeDriver: true }),
-        ]).start()
-      } else if (swipeStartRef.current) {
-        // Swipe para navegar (só sem zoom)
-        const dx = evt.nativeEvent.changedTouches[0]?.pageX - swipeStartRef.current.x
-        const dy = evt.nativeEvent.changedTouches[0]?.pageY - swipeStartRef.current.y
+      const t = evt.nativeEvent.touches[0]
+      panGestureRef.current = { startX: t.pageX, startY: t.pageY, startTx: z.tx, startTy: z.ty }
+      return
+    }
+    // remaining === 0: todos os dedos levantados
+    z.pinchStart = null
+    if (z.scale > 1.05) {
+      // Snap se foi longe demais
+      const limit = 150 * (z.scale - 1)
+      const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
+      const clampedTy = Math.max(-limit, Math.min(limit, z.ty))
+      z.tx = clampedTx; z.ty = clampedTy
+      viewerTranslateX.setValue(clampedTx)
+      viewerTranslateY.setValue(clampedTy)
+    } else if (panGestureRef.current) {
+      // Swipe para navegar (só sem zoom)
+      const changed = evt.nativeEvent.changedTouches[0]
+      if (changed) {
+        const dx = changed.pageX - panGestureRef.current.startX
+        const dy = changed.pageY - panGestureRef.current.startY
         if (Math.abs(dx) > 60 && Math.abs(dy) < 80) {
           if (dx < 0) navigateViewer(1)
           else navigateViewer(-1)
         }
-        swipeStartRef.current = null
       }
     }
+    panGestureRef.current = null
   }
 
   // PanResponder vazio — mantido apenas para compatibilidade com código existente
