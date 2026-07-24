@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
 import * as DocumentPicker from 'expo-document-picker'
+import * as ScreenOrientation from 'expo-screen-orientation'
 // SDK 54: a API clássica (documentDirectory, readAsStringAsync, etc.) migrou
 // para o submódulo /legacy. Mantemos ela para não reescrever toda a lógica.
 import * as FileSystem from 'expo-file-system/legacy'
@@ -1459,6 +1460,7 @@ function AppInner() {
   async function openItem(item) {
     setSelected(item)
     selectedRef.current = item
+    ScreenOrientation.unlockAsync().catch(() => {})
     setFullUri(null)
     setFullProgress(0)
     setFullLoading(true)
@@ -1645,6 +1647,7 @@ function AppInner() {
     setSlidePreparing('')
     setSlideIndex(0)
     slideOpacity.setValue(1)
+    ScreenOrientation.unlockAsync().catch(() => {})
     setSlideshow({ album, items: prepared })
   }
 
@@ -1652,6 +1655,7 @@ function AppInner() {
     if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
     slideTimerRef.current = null
     setSlideshow(null)
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {})
   }
 
   function advanceSlide(step = 1) {
@@ -2355,7 +2359,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.5</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.6</Text>
             </View>
           )}
         />
@@ -2376,10 +2380,10 @@ function AppInner() {
         ))}
       </View>
 
-      <Modal visible={!!selected} animationType="slide" onRequestClose={() => setSelected(null)}>
+      <Modal visible={!!selected} animationType="slide" onRequestClose={() => { setSelected(null); selectedRef.current = null; ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {}) }}>
         <SafeAreaView style={styles.viewer}>
           <View style={styles.viewerHeader}>
-            <Pressable onPress={() => setSelected(null)} style={styles.closeButton}>
+            <Pressable onPress={() => { setSelected(null); selectedRef.current = null; ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {}) }} style={styles.closeButton}>
               <Text style={styles.closeButtonText}>Fechar</Text>
             </Pressable>
             <Text style={styles.viewerTitle} numberOfLines={1}>{selected?.filename}</Text>
