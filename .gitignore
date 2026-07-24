@@ -24,6 +24,9 @@ backend/logs/*.log
 node_modules/
 frontend/dist/
 
+# rclone — contém tokens OAuth do OneDrive, nunca commitar
+tools/rclone/rclone.conf
+
 # IDE
 .vscode/
 .idea/
