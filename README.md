@@ -1,4 +1,4 @@
-# PICS - Personal Image & Content System
+﻿# PICS - Personal Image & Content System
 
 Sistema organizador de fotos e videos pessoais com reconhecimento facial, busca por IA (Azure OpenAI) e app Android.
 
@@ -17,8 +17,8 @@ Sistema organizador de fotos e videos pessoais com reconhecimento facial, busca 
 ```
 pics/
   backend/        FastAPI + SQLite + workers de IA
-  frontend/       React (Vite) — interface web
-  mobile/         React Native (Expo) — app Android
+  frontend/       React (Vite) â€” interface web
+  mobile/         React Native (Expo) â€” app Android
   tools/          Scripts PowerShell (build APK, status, rclone)
   Caddyfile       Reverse proxy HTTPS
   install.ps1     Instalador para novo PC Windows
@@ -55,7 +55,7 @@ start.bat
 ```
 
 - HTTP local:  http://localhost:8080
-- HTTPS:       https://seu-dominio:8443 (requer cert — ver SSL_SETUP.md)
+- HTTPS:       https://seu-dominio:8443 (requer cert â€” ver SSL_SETUP.md)
 
 ## Backend manual
 
@@ -77,7 +77,7 @@ Copie `backend\.env.example` para `backend\.env` e ajuste:
 | `FFPROBE_PATH`        | Caminho do ffprobe.exe                                     |
 | `AZURE_OPENAI_*`      | Credenciais Azure OpenAI (opcional)                        |
 | `RCLONE_ENABLED`      | `true` para sync automatico com OneDrive                   |
-| `SECRET_KEY`          | Chave JWT — mude em producao                               |
+| `SECRET_KEY`          | Chave JWT â€” mude em producao                               |
 
 ## rclone / OneDrive
 
@@ -97,3 +97,9 @@ powershell -ExecutionPolicy Bypass -File tools\dispatch-apk.ps1
 # aguarda ~15 min
 powershell -ExecutionPolicy Bypass -File tools\dl-apk.ps1
 ```
+
+## Creditos
+
+Desenvolvido por **klawzedo** (klawzedo@gmail.com).
+
+Construido com o auxilio de [GitHub Copilot](https://github.com/features/copilot) (claude-sonnet-4-6), com aproximadamente 3,5 milhoes de tokens consumidos durante o desenvolvimento.
