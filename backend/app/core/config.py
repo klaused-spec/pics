@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     # O default usa caminho absoluto relativo a este arquivo para não depender do cwd.
     database_url: str = "sqlite:///" + str(Path(__file__).parent.parent.parent / "pics.db").replace("\\", "/")
 
+    # Backup do banco: diretório onde o zip é salvo no startup (vazio = desativado)
+    db_backup_dir: str = ""
+
     # Servidor
     host: str = "0.0.0.0"
     port: int = 8000

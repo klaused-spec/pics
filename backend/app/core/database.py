@@ -19,30 +19,22 @@ engine = create_engine(
     connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
 
-# SQLite: aplica os PRAGMAs em TODA nova conexão do pool (não só uma vez no
-# import). O busy_timeout é POR CONEXÃO — se não for setado em cada conexão do
-# pool, as leituras (ex.: /sync/manifest) usam o default 0 e falham na hora que
-# o worker de AI/faces/scan segura o lock de escrita, causando o sync do app
-# travar por horas numa página. Com WAL + busy_timeout alto, o leitor espera o
-# writer liberar em vez de estourar erro imediatamente.
 if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA journal_mode=WAL;")
-            cursor.execute("PRAGMA busy_timeout=30000;")  # 30s: espera o writer
-            cursor.execute("PRAGMA synchronous=NORMAL;")   # seguro com WAL, mais rápido
+            cursor.execute("PRAGMA busy_timeout=30000;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
         finally:
             cursor.close()
 
-    # Garante o WAL de imediato (o listener acima cobre as demais conexões).
     try:
         with engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL;"))
             conn.execute(text("PRAGMA busy_timeout=30000;"))
     except Exception:
-        # Avoid crashing on startup if PRAGMA fails; logs will show issues
         pass
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -58,6 +50,74 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def backup_db_to_zip() -> str | None:
+    """
+    Copia o pics.db (via SQLite VACUUM INTO) para um zip em DB_BACKUP_DIR.
+    Retorna o caminho do zip criado, ou None se desativado/falhou.
+    O backup é feito com VACUUM INTO para garantir consistência mesmo com WAL ativo.
+    Mantém os últimos 7 zips (rotação por data no nome).
+    """
+    import logging
+    import shutil
+    import zipfile
+    import datetime
+    import glob
+
+    log = logging.getLogger(__name__)
+
+    backup_dir = settings.db_backup_dir.strip()
+    if not backup_dir:
+        return None
+
+    backup_path = Path(backup_dir)
+    try:
+        backup_path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log.warning(f"[backup] Não foi possível criar diretório de backup '{backup_dir}': {e}")
+        return None
+
+    if "sqlite" not in settings.database_url:
+        return None
+
+    db_file = settings.database_url.replace("sqlite:///", "").replace("sqlite://", "")
+    if not db_file or not Path(db_file).exists():
+        log.warning(f"[backup] Banco não encontrado em '{db_file}', backup ignorado")
+        return None
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp_copy = backup_path / f"pics_{ts}.db"
+    zip_path = backup_path / f"pics_{ts}.zip"
+
+    try:
+        # VACUUM INTO cria uma cópia limpa e consistente (fecha WAL antes de copiar)
+        import sqlite3
+        with sqlite3.connect(db_file) as conn:
+            conn.execute(f"VACUUM INTO '{tmp_copy}'")
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmp_copy, "pics.db")
+
+        tmp_copy.unlink(missing_ok=True)
+        log.info(f"[backup] Banco salvo em '{zip_path}'")
+
+        # Mantém só os últimos 7 backups
+        zips = sorted(glob.glob(str(backup_path / "pics_*.zip")))
+        for old in zips[:-7]:
+            try:
+                Path(old).unlink()
+            except Exception:
+                pass
+
+        return str(zip_path)
+    except Exception as e:
+        log.warning(f"[backup] Falha ao fazer backup do banco: {e}")
+        try:
+            tmp_copy.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
 
 
 def init_db():

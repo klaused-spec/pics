@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
-from app.core.database import init_db, backup_env_to_db, restore_env_from_db
+from app.core.database import init_db, backup_env_to_db, restore_env_from_db, backup_db_to_zip
 from app.api import auth_router, media_router, persons_router, jobs_router, albums_router, settings_router, mobile_router
 from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync, run_rclone_download_job, run_thumbnail_warmup
 
@@ -34,6 +34,11 @@ async def lifespan(app: FastAPI):
     restore_env_from_db()
     init_db()
     backup_env_to_db()
+    zip_path = backup_db_to_zip()
+    if zip_path:
+        logger.info(f"Backup do banco criado: {zip_path}")
+    elif settings.db_backup_dir:
+        logger.warning(f"Backup do banco falhou (diretório indisponível?): {settings.db_backup_dir}")
 
     # Marca jobs "running" órfãos como "interrupted" (crash/restart anterior)
     from app.core.database import SessionLocal
