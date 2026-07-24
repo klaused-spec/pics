@@ -7,6 +7,8 @@ import mimetypes
 from pathlib import Path
 from typing import Optional
 
+import logging
+
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
@@ -18,6 +20,8 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.models import Media, Tag, Person, Face
+
+logger = logging.getLogger(__name__)
 from app.services.ai_vision import search_by_description
 from app.services.file_ops import media_file_operation_lock
 
@@ -1264,6 +1268,7 @@ def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Sess
             if media.media_type == "image":
                 from PIL import Image
 
+                Image.MAX_IMAGE_PIXELS = None  # imagens legítimas de 200MP+ (ex.: DNG convertido)
                 img = Image.open(filepath)
                 img.thumbnail((size, size))
 
