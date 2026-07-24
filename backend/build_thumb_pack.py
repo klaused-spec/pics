@@ -4,13 +4,13 @@ Fluxo pretendido:
   1. Rode este script no PC (onde estão os thumbs e o pics.db).
   2. Copie o .zip gerado para um pendrive.
   3. No app Android: Configurações > Biblioteca > "Importar pacote offline",
-     escolha o .zip. O app extrai tudo para a pasta local de thumbs e passa a
-     exibir a galeria sem rede.
+     escolha o .zip. O app extrai tudo para a pasta local de thumbs E carrega
+     a lista de metadados (items.json), eliminando o sync longo na carga inicial.
 
 O pacote contém:
-  - {id}.jpg  para cada thumbnail disponível (nome = id da mídia, batendo com
-    THUMB_DIR/{id}.jpg do app).
-    - manifest.json  com metadados leves {version, size, count, created_at}.
+  - {id}.jpg    thumbnail de cada mídia (nome = id, bate com THUMB_DIR/{id}.jpg).
+  - items.json  lista completa de metadados (id, filename, date_taken, etc.).
+  - manifest.json  metadados leves do pacote {version, size, count, created_at}.
 
 Uso:
   python build_thumb_pack.py [--out CAMINHO.zip] [--size 300] [--all]
@@ -81,6 +81,56 @@ def eligible_ids() -> set[str] | None:
         return None
 
 
+def build_items_json(eligible: set[str] | None) -> str:
+    """Gera items.json com metadados de todas as midias elegiveis.
+
+    Retorna string JSON pronta para gravar no zip. Inclui apenas os campos
+    que o app usa na galeria (mesmo formato do /media/sync/manifest).
+    """
+    try:
+        from app.core.database import SessionLocal
+        from app.models.models import Media
+        import os
+        db = SessionLocal()
+        try:
+            query = db.query(Media).filter(
+                Media.is_duplicate == False, Media.is_organized == True  # noqa: E712
+            )
+            items = []
+            for media in query.yield_per(500):
+                mid = str(media.id)
+                if eligible is not None and mid not in eligible:
+                    continue
+                filepath = media.organized_path or media.original_path or ""
+                folder = os.path.dirname(os.path.normpath(filepath)) if filepath else None
+                items.append({
+                    "id": media.id,
+                    "filename": media.filename,
+                    "media_type": media.media_type,
+                    "mime_type": media.mime_type,
+                    "date_taken": media.date_taken.isoformat() if media.date_taken else None,
+                    "year": media.date_taken.year if media.date_taken else None,
+                    "month": media.date_tja fiz , nada
+                    aken.month if media.date_taken else None,
+                    "duration_seconds": media.duration_seconds,
+                    "sha256_hash": media.sha256_hash,
+                    "folder": folder,
+                    # URLs preenchidas pelo app com o baseUrl configurado pelo usuario.
+                    # Gravamos None aqui; o app substitui na importacao.
+                    "thumbnail_url": None,
+                    "file_url": None,
+                    "stream_url": None,
+                    "local_thumbnail_uri": None,
+                    "thumbnail_failed": False,
+                })
+            return json.dumps(items, separators=(',', ':'))
+        finally:
+            db.close()
+    except Exception as exc:
+        print(f"AVISO: nao consegui gerar items.json ({exc}); pacote so tera thumbs.")
+        return ""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gera pacote offline de thumbnails.")
     parser.add_argument("--out", default=None, help="Caminho do .zip de saida.")
@@ -109,6 +159,17 @@ def main() -> None:
         print("Nada para empacotar. Rode o warmup de thumbs no backend primeiro.")
         sys.exit(1)
 
+    # Gera items.json antes de abrir o zip (pode demorar para DBs grandes).
+    eligible_set = None if args.all else eligible_ids()
+    print("Gerando items.json com metadados das midias...")
+    items_json = build_items_json(eligible_set)
+    if items_json:
+        import json as _json
+        n_items = len(_json.loads(items_json))
+        print(f"  {n_items} itens no items.json.")
+    else:
+        print("  items.json nao gerado (banco indisponivel); o app precisara sincronizar.")
+
     # ZIP_STORED: thumbs ja sao JPG comprimidos; recomprimir so gasta CPU/tempo.
     included: list[int] = []
     print(f"Gravando {out_path} ...")
@@ -124,10 +185,14 @@ def main() -> None:
             except OSError:
                 continue
 
+        if items_json:
+            zf.writestr("items.json", items_json)
+
         manifest = {
-            "version": 1,
+            "version": 2,
             "size": args.size,
             "count": len(included),
+            "has_items": bool(items_json),
             "created_at": int(time.time()),
         }
         zf.writestr("manifest.json", json.dumps(manifest))

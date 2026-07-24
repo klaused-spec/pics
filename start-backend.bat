@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0backend" || (
     echo [ERRO] Nao foi possivel acessar %~dp0backend
-    pause
+    rem pause
     exit /b 1
 )
 
@@ -15,7 +15,7 @@ if errorlevel 1 (
         set "PYTHONCMD=%ProgramFiles(x86)%\Python312\python.exe"
     ) else (
         echo [ERRO] Python nao encontrado. Instale Python 3.12 e adicione ao PATH.
-        pause
+        rem pause
         exit /b 1
     )
 )
@@ -35,4 +35,5 @@ if exist "venv\Scripts\activate.bat" (
 
 echo Iniciando backend em http://127.0.0.1:8000 ...
 "%PYTHONCMD%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-pause
+rem pause
+exit
