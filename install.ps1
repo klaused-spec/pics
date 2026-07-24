@@ -304,6 +304,20 @@ if (Test-Path (Join-Path $frontendDist "index.html")) {
     Ok "Frontend buildado"
 }
 
+# ─── Modelos ONNX (face recognition) ─────────────────────────────────────────
+Header "Modelos ONNX (reconhecimento facial)"
+$models = @('1k3d68.onnx','2d106det.onnx','det_10g.onnx','genderage.onnx','w600k_r50.onnx')
+$modelsDir = Join-Path $ROOT "backend\models"
+$missingModels = $models | Where-Object { -not (Test-Path (Join-Path $modelsDir $_)) }
+if ($missingModels.Count -eq 0) {
+    Ok "Todos os modelos presentes em backend\models\"
+} else {
+    Err "Modelos ausentes em backend\models\:"
+    $missingModels | ForEach-Object { Err "  $_" }
+    Err "Restaure os modelos do pics-sensitive.zip (Expand-Archive pics-sensitive.zip -DestinationPath . -Force)"
+    Err "Sem os modelos, reconhecimento facial nao funcionara."
+}
+
 # ─── Resumo ───────────────────────────────────────────────────────────────────
 Header "Instalacao concluida"
 $backendCmd = "cd $ROOT\backend ; venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"

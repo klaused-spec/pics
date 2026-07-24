@@ -10,7 +10,12 @@ $files = @(
     "backend\pics.db",
     "tools\caddy\certs\fullchain.pem",
     "tools\caddy\certs\privkey.pem",
-    "tools\rclone\rclone.conf"
+    "tools\rclone\rclone.conf",
+    "backend\models\1k3d68.onnx",
+    "backend\models\2d106det.onnx",
+    "backend\models\det_10g.onnx",
+    "backend\models\genderage.onnx",
+    "backend\models\w600k_r50.onnx"
 )
 
 Write-Host "`nExportando arquivos sensiveis..." -ForegroundColor Cyan
