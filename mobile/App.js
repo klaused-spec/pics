@@ -1626,7 +1626,15 @@ function AppInner() {
       for (let index = 0; index < albumItems.length; index += 1) {
         const item = albumItems[index]
         setSlidePreparing(`Baixando ${index + 1}/${albumItems.length}`)
-        const uri = await ensureFullDownloaded(item)
+        let uri
+        if (item.media_type === 'video') {
+          // Vídeos: HLS on-the-fly, sem baixar
+          const base = normalizeBaseUrl(baseUrl)
+          const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+          uri = `${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`
+        } else {
+          uri = await ensureFullDownloaded(item)
+        }
         prepared.push({ ...item, localUri: uri })
       }
     } catch (error) {
@@ -2347,7 +2355,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.4</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.5</Text>
             </View>
           )}
         />
