@@ -1425,13 +1425,19 @@ function AppInner() {
     // remaining === 0: todos os dedos levantados
     z.pinchStart = null
     if (z.scale > 1.05) {
-      // Snap se foi longe demais
+      // Snap suave de volta se foi longe demais
       const limit = 150 * (z.scale - 1)
       const clampedTx = Math.max(-limit, Math.min(limit, z.tx))
       const clampedTy = Math.max(-limit, Math.min(limit, z.ty))
-      z.tx = clampedTx; z.ty = clampedTy
-      viewerTranslateX.setValue(clampedTx)
-      viewerTranslateY.setValue(clampedTy)
+      if (clampedTx !== z.tx || clampedTy !== z.ty) {
+        z.tx = clampedTx; z.ty = clampedTy
+        Animated.parallel([
+          Animated.spring(viewerTranslateX, { toValue: clampedTx, useNativeDriver: true, friction: 8 }),
+          Animated.spring(viewerTranslateY, { toValue: clampedTy, useNativeDriver: true, friction: 8 }),
+        ]).start()
+      }
+      panGestureRef.current = null
+      return
     } else if (panGestureRef.current) {
       // Swipe para navegar (só sem zoom)
       const changed = evt.nativeEvent.changedTouches[0]
@@ -1459,10 +1465,10 @@ function AppInner() {
     try {
       if (item.media_type === 'video') {
         // Vídeos: sempre HLS on-the-fly (720p, sem baixar o arquivo original).
-        // Não usa galeria local pois carregar um .mp4 de vários GB seria lento.
         const base = normalizeBaseUrl(baseUrl)
         const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-        setFullUri(`${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`)
+        const hlsUrl = `${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`
+        setFullUri(hlsUrl)
         setFullLoading(false)
       } else {
         // Imagens: procura na galeria offline primeiro, senão baixa o full.
@@ -1555,8 +1561,12 @@ function AppInner() {
       const saved = await saveItemToGalleryFile(temp, item)
       markFullCached(item.id)
       return saved.uri
-    } finally {
-      await FileSystem.deleteAsync(temp, { idempotent: true }).catch(() => {})
+    } catch (err) {
+      if (err.code === 'PERMISSION') {
+        // Sem permissão de galeria: exibe direto do cache temporário (não salva)
+        return temp
+      }
+      throw err
     }
   }
 
@@ -2337,7 +2347,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.3</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.4</Text>
             </View>
           )}
         />
