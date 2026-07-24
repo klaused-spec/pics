@@ -27,6 +27,11 @@ frontend/dist/
 # rclone — contém tokens OAuth do OneDrive, nunca commitar
 tools/rclone/rclone.conf
 
+# Certificados SSL — chave privada nunca deve ir ao repositório
+tools/caddy/certs/*.pem
+tools/caddy/certs/*.key
+tools/caddy/certs/*.crt
+
 # IDE
 .vscode/
 .idea/

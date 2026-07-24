@@ -29,7 +29,7 @@
 
 pics.meulavoro.com.br:8443 {
 	# Certificado gerado pelo certbot (ver issue-cert.ps1)
-	tls C:\caddy\certs\fullchain.pem C:\caddy\certs\privkey.pem
+	tls C:\src\pics\tools\caddy\certs\fullchain.pem C:\src\pics\tools\caddy\certs\privkey.pem
 
 	# Compressão só para o conteúdo NÃO-API (frontend estático). Respostas
 	# grandes de JSON da API (manifesto de sync) comprimidas em streaming sobre
