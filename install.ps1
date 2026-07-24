@@ -75,9 +75,13 @@ if (-not $venvOk) {
 }
 
 Info "Atualizando pip ..."
-& $python -m pip install --upgrade pip --quiet
+& $python -m pip install --upgrade pip
 Info "Instalando requirements.txt (pode demorar alguns minutos) ..."
-& $pip install -r (Join-Path $ROOT "backend\requirements.txt") --quiet
+& $pip install -r (Join-Path $ROOT "backend\requirements.txt")
+if ($LASTEXITCODE -ne 0) {
+    Err "Falha ao instalar dependencias Python. Veja o erro acima."
+    exit 1
+}
 Ok "Dependencias instaladas"
 
 # ─── 3. Caddy ─────────────────────────────────────────────────────────────────
