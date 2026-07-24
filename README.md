@@ -27,8 +27,17 @@ pics/
 
 ## Instalacao (novo PC Windows)
 
+> **Requer PowerShell 7+.** O PS 5.1 (padrao do Windows) nao e compativel com o instalador.
+> Instale antes:
+> ```powershell
+> winget install --id Microsoft.PowerShell --accept-package-agreements --accept-source-agreements
+> ```
+> Ou baixe o MSI em: https://github.com/PowerShell/PowerShell/releases/latest
+
+Depois de instalar o PS7, rode:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+pwsh -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Requisitos: Python 3.x, Node.js (para build do frontend), acesso a internet.
