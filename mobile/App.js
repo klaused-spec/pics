@@ -22,6 +22,7 @@ import {
   Modal,
   PanResponder,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -1572,6 +1573,20 @@ function AppInner() {
     }
   }
 
+  async function shareItem(item) {
+    if (!fullUri) return
+    try {
+      // Para vídeos HLS (URL remota) compartilha a URL; para imagens compartilha o arquivo local
+      if (item.media_type === 'video') {
+        await Share.share({ message: fullUri })
+      } else {
+        await Share.share({ url: fullUri, message: item.filename || '' })
+      }
+    } catch (err) {
+      if (err.message !== 'User did not share') Alert.alert('Compartilhar', err.message)
+    }
+  }
+
   async function saveItemToGallery(item) {
     setSavingGallery(true)
     try {
@@ -2359,7 +2374,7 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.6</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.4.7</Text>
             </View>
           )}
         />
@@ -2387,8 +2402,8 @@ function AppInner() {
               <Text style={styles.closeButtonText}>Fechar</Text>
             </Pressable>
             <Text style={styles.viewerTitle} numberOfLines={1}>{selected?.filename}</Text>
-            <Pressable onPress={() => selected && saveItemToGallery(selected)} style={styles.saveButton} disabled={savingGallery || fullLoading}>
-              {savingGallery ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.saveButtonText}>⬇ Salvar</Text>}
+            <Pressable onPress={() => selected && shareItem(selected)} style={styles.saveButton} disabled={fullLoading}>
+              <Text style={styles.saveButtonText}>↗ Compartilhar</Text>
             </Pressable>
           </View>
           {fullLoading && (
