@@ -1489,11 +1489,10 @@ function AppInner() {
     setFullLoading(true)
     try {
       if (item.media_type === 'video') {
-        // Vídeos: sempre HLS on-the-fly (720p, sem baixar o arquivo original).
+        // Vídeos: stream direto com HTTP Range — começa a tocar imediatamente.
         const base = normalizeBaseUrl(baseUrl)
         const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-        const hlsUrl = `${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`
-        setFullUri(hlsUrl)
+        setFullUri(`${base}/api/media/${item.id}/stream${tokenParam}`)
         setFullLoading(false)
       } else {
         // Imagens: procura na galeria offline primeiro, senão baixa o full.
