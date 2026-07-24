@@ -1031,11 +1031,8 @@ function AppInner() {
         const cursorParam = (afterId != null)
           ? `&after_id=${encodeURIComponent(afterId)}`
           : ''
-        // per_page=500 (era 1000): respostas menores reduzem a chance do stream
-        // HTTP/2 do Caddy abortar ("http2: stream closed") em rede movel, que
-        // deixava o fetch pendurado e travava o sync numa pagina. Com keyset,
-        // cada pagina e rapida, entao o dobro de paginas nao pesa.
-        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=500&size=300${sinceParam}${cursorParam}`)
+        // per_page=2000: LAN local, respostas maiores aceleram o sync inicial.
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=2000&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
         // Status discreto SÓ na carga inicial (sem cache prévio). No incremental
         // (poucas páginas) não mostra nada — o app fica com a galeria, não com telas.
@@ -2379,7 +2376,24 @@ function AppInner() {
                 </Pressable>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.8</Text>
+              <Text style={styles.sectionLabel}>Sobre</Text>
+              <View style={styles.settingsGroup}>
+                <View style={styles.rowItem}>
+                  <Text style={styles.rowItemText}>Desenvolvido por</Text>
+                  <Text style={styles.rowItemHint}>klawzedo</Text>
+                </View>
+                <View style={styles.rowDivider} />
+                <View style={styles.rowItem}>
+                  <Text style={styles.rowItemText}>Contato</Text>
+                  <Text style={styles.rowItemHint}>klawzedo@gmail.com</Text>
+                </View>
+                <View style={styles.rowDivider} />
+                <View style={styles.rowItem}>
+                  <Text style={styles.rowItemText}>© 2026 Todos os direitos reservados</Text>
+                </View>
+              </View>
+
+              <Text style={styles.versionText}>PICS Mobile v0.4.9</Text>
             </View>
           )}
         />

@@ -2,7 +2,8 @@
   "expo": {
     "name": "PICS Mobile",
     "slug": "pics-mobile",
-    "version": "0.4.8",
+    "version": "0.4.9",
+    "icon": "./assets/icon.png",
     "orientation": "default",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": [
@@ -21,7 +22,7 @@
     ],
     "android": {
       "package": "com.pics.mobile",
-      "versionCode": 13,
+      "versionCode": 14,
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
