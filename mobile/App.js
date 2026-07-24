@@ -1667,10 +1667,10 @@ function AppInner() {
         setSlidePreparing(`Baixando ${index + 1}/${albumItems.length}`)
         let uri
         if (item.media_type === 'video') {
-          // Vídeos: HLS on-the-fly, sem baixar
+          // Vídeos: stream direto (sem transcodificação HLS — mais fluido para slideshow)
           const base = normalizeBaseUrl(baseUrl)
           const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-          uri = `${base}/api/media/${item.id}/hls/playlist.m3u8${tokenParam}`
+          uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
           uri = await ensureFullDownloaded(item)
         }
