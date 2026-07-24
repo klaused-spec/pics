@@ -24,7 +24,7 @@ function Layout() {
       }
     }
     checkStorage()
-    const interval = setInterval(checkStorage, 30000)
+    const interval = setInterval(checkStorage, 15000)
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 

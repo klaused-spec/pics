@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _cache_lock = threading.Lock()
 _cache_result: Optional[dict] = None
 _cache_ts: float = 0.0
-_CACHE_TTL: float = 10.0  # segundos
+_CACHE_TTL: float = 5.0  # segundos
 
 
 def _check_dir(path: str) -> dict:
