@@ -214,37 +214,49 @@ $frontendDist = Join-Path $ROOT "frontend\dist"
 if (Test-Path (Join-Path $frontendDist "index.html")) {
     Ok "Build do frontend ja existe — pulando"
 } else {
+    # Garante Node.js / npm disponivel
     $npm = Get-Command npm -ErrorAction SilentlyContinue
-    if ($npm) {
-        Info "Rodando npm install + npm run build ..."
-        Push-Location (Join-Path $ROOT "frontend")
-        npm install --silent 2>&1 | Out-Null
-        npm run build 2>&1
-        Pop-Location
-        Ok "Frontend buildado"
-    } else {
-        Err "npm nao encontrado. Instale Node.js em https://nodejs.org/"
-        Err "Depois rode: cd frontend && npm install && npm run build"
+    if (-not $npm) {
+        Info "npm nao encontrado. Instalando Node.js LTS via winget ..."
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($winget) {
+            winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # Recarrega PATH da sessao
+            $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
+            $npm = Get-Command npm -ErrorAction SilentlyContinue
+        }
+        if (-not $npm) {
+            Err "Nao foi possivel instalar Node.js automaticamente."
+            Err "Instale manualmente em https://nodejs.org/ e execute novamente install.ps1"
+            exit 1
+        }
+        Ok "Node.js instalado: $(node --version)"
     }
+
+    Info "Rodando npm install + npm run build ..."
+    Push-Location (Join-Path $ROOT "frontend")
+    npm install --silent 2>&1 | Out-Null
+    npm run build 2>&1
+    Pop-Location
+    Ok "Frontend buildado"
 }
 
 # ─── Resumo ───────────────────────────────────────────────────────────────────
 Header "Instalacao concluida"
-Write-Host @"
-
-  Para rodar o PICS:
-    1. Backend:   cd $ROOT\backend
-                  venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-    2. Caddy:     $ROOT\tools\caddy\caddy.exe run --config "$ROOT\Caddyfile"
-
-  Ou use o start.bat (mata tudo e sobe os dois):
-                  $ROOT\start.bat
-
-  Acesso HTTP (sem SSL):  http://localhost:8080
-  Acesso HTTPS:           https://<seu-dominio>:8443  (requer cert em C:\caddy\certs\)
-
-  Para SSL com certbot, veja: $ROOT\SSL_SETUP.md
-  Para rclone/OneDrive,  veja: $ROOT\backend\RCLONE_GUIDE.md
-
-"@ -ForegroundColor White
+$backendCmd = "cd $ROOT\backend ; venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+$caddyCmd   = "$ROOT\tools\caddy\caddy.exe run --config $ROOT\Caddyfile"
+$startCmd   = "$ROOT\start.bat"
+Write-Host ""
+Write-Host "  Para rodar o PICS:" -ForegroundColor White
+Write-Host "    start.bat  (pergunta modo dev ou prod)" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Ou manualmente:" -ForegroundColor White
+Write-Host "    Backend : $backendCmd" -ForegroundColor Gray
+Write-Host "    Caddy   : $caddyCmd" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Acesso HTTP (sem SSL) : http://localhost:8080" -ForegroundColor White
+Write-Host "  Acesso HTTPS          : https://<dominio>:8443 (requer cert em tools\caddy\certs\)" -ForegroundColor White
+Write-Host ""
+Write-Host "  SSL    : $ROOT\SSL_SETUP.md" -ForegroundColor Gray
+Write-Host "  rclone : $ROOT\backend\RCLONE_GUIDE.md" -ForegroundColor Gray
+Write-Host ""
