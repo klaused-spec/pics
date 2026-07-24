@@ -1,7 +1,12 @@
 import { Routes, Route } from 'react-router-dom'
+import { useState, useEffect, createContext, useContext } from 'react'
+import { api } from './api'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import Login from './pages/Login'
+
+export const StorageContext = createContext({ unavailableDirs: [] })
+export function useStorageStatus() { return useContext(StorageContext) }
 import Gallery from './pages/Gallery'
 import AlbumDetail from './pages/AlbumDetail'
 import MediaDetail from './pages/MediaDetail'
@@ -18,7 +23,23 @@ import MobileApps from './pages/MobileApps'
 import Users from './pages/Users'
 
 function App() {
+  const [unavailableDirs, setUnavailableDirs] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+    async function check() {
+      try {
+        const res = await api.get('/health')
+        if (!cancelled) setUnavailableDirs(res.data?.storage?.unavailable || [])
+      } catch { /* backend fora do ar */ }
+    }
+    check()
+    const iv = setInterval(check, 15000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [])
+
   return (
+    <StorageContext.Provider value={{ unavailableDirs }}>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/" element={
@@ -47,6 +68,7 @@ function App() {
         </ProtectedRoute>
       } />
     </Routes>
+    </StorageContext.Provider>
   )
 }
 

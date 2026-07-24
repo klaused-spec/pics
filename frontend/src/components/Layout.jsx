@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { Home, Image, Search, Users, UserCog, Settings, Database, ChevronLeft, ChevronRight, LogOut, Smartphone, HardDriveOff } from 'lucide-react'
-import { api } from '../api'
+import { Home, Image, Search, Users, UserCog, Settings, Database, ChevronLeft, ChevronRight, LogOut, Smartphone, HardDrive } from 'lucide-react'
+import { useStorageStatus } from '../App'
 
 function Layout() {
   const navigate = useNavigate()
@@ -9,24 +9,7 @@ function Layout() {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem('layout_sidebar_collapsed') === 'true'
   })
-  const [unavailableDirs, setUnavailableDirs] = useState([])
-
-  useEffect(() => {
-    let cancelled = false
-    async function checkStorage() {
-      try {
-        const res = await api.get('/health')
-        if (!cancelled) {
-          setUnavailableDirs(res.data?.storage?.unavailable || [])
-        }
-      } catch {
-        // backend fora do ar — não mostrar aviso de storage
-      }
-    }
-    checkStorage()
-    const interval = setInterval(checkStorage, 15000)
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [])
+  const { unavailableDirs } = useStorageStatus()
 
   const toggleCollapsed = () => {
     const next = !collapsed
@@ -114,7 +97,7 @@ function Layout() {
       <main className="flex-1 overflow-auto flex flex-col">
         {unavailableDirs.length > 0 && (
           <div className="bg-red-900/80 border-b border-red-700 px-4 py-3 flex items-start gap-3 shrink-0">
-            <HardDriveOff size={18} className="text-red-400 mt-0.5 shrink-0" />
+            <HardDrive size={18} className="text-red-400 mt-0.5 shrink-0" />
             <div className="text-sm">
               <span className="font-semibold text-red-300">Unidade(s) indisponível(is) — operações de arquivo bloqueadas.</span>
               <ul className="mt-1 space-y-0.5">

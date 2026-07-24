@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
+import { useStorageStatus } from '../App';
+import { HardDrive } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
+  const { unavailableDirs } = useStorageStatus();
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -48,7 +51,20 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-purple-900 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-purple-900 flex flex-col items-center justify-center">
+      {unavailableDirs.length > 0 && (
+        <div className="w-full bg-red-900/90 border-b border-red-700 px-4 py-3 flex items-start gap-3 mb-4 max-w-2xl rounded-lg">
+          <HardDrive size={18} className="text-red-400 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold text-red-300">Unidade(s) indisponível(is) — operações de arquivo bloqueadas.</span>
+            <ul className="mt-1 space-y-0.5">
+              {unavailableDirs.map(d => (
+                <li key={d} className="text-red-400 font-mono text-xs">{d}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
       <div className="w-full max-w-md">
         {/* Logo/Header */}
         <div className="text-center mb-8">
