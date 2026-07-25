@@ -1781,8 +1781,7 @@ function AppInner() {
   useEffect(() => {
     if (!slideshow) return
     if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
-    const currentItem = slideshow.items[slideIndex]
-    if (currentItem?.media_type === 'video') return
+    // Vídeos agora mostram thumbnail — avançam pelo timer igual às fotos
     slideTimerRef.current = setTimeout(() => advanceSlide(1), Math.max(2, slideSeconds) * 1000)
     return () => {
       if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
@@ -2844,7 +2843,7 @@ const styles = StyleSheet.create({
   slideClose: { position: 'absolute', top: 40, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   slideCloseText: { color: '#ffffff', fontSize: 18, fontWeight: '900' },
   slideCounter: { position: 'absolute', bottom: 36, alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 10 },
-  slideVideoIcon: { position: 'absolute', top: '50%', left: '50%', marginTop: -28, marginLeft: -28, width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  slideVideoIcon: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
   slideVideoIconText: { color: '#fff', fontSize: 24, marginLeft: 4 },
   slideCounterText: { color: '#ffffff', fontWeight: '700' },
   sliderControlBtn: { paddingHorizontal: 16, paddingVertical: 10 },
