@@ -44,23 +44,10 @@ if ($DownloadApk) {
     try {
         $ghToken = $GithubToken
         if (-not $ghToken) {
-            # Tenta gh CLI (GitHub CLI)
+            # git credential fill (mesmo metodo do dl-apk.ps1, sem popup)
             try {
-                $ghToken = (& gh auth token 2>$null).Trim()
-            } catch {}
-        }
-        if (-not $ghToken) {
-            # Tenta git credential fill via Start-Process com stdin/stdout
-            try {
-                $tmpIn  = [System.IO.Path]::GetTempFileName()
-                $tmpOut = [System.IO.Path]::GetTempFileName()
-                Set-Content -Path $tmpIn -Value "protocol=https`nhost=github.com`n"
-                $p = Start-Process -FilePath 'git' -ArgumentList 'credential','fill' `
-                    -RedirectStandardInput $tmpIn -RedirectStandardOutput $tmpOut `
-                    -NoNewWindow -Wait -PassThru
-                $cred = Get-Content $tmpOut -Raw
-                Remove-Item $tmpIn,$tmpOut -Force -ErrorAction SilentlyContinue
-                $ghToken = ($cred -split "`n" | Where-Object { $_ -match '^password=' }) -replace '^password=',''
+                $cred = "protocol=https`nhost=github.com`n`n" | git credential fill
+                $ghToken = (($cred -split "`n") | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
                 $ghToken = $ghToken.Trim()
             } catch {}
         }
