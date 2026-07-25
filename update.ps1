@@ -42,17 +42,8 @@ if ($DownloadApk) {
     $destDir = "$Root\mobile\pics-mobile-debug-apk"
 
     try {
-        $ghToken = $GithubToken
-        if (-not $ghToken) {
-            # git credential fill (mesmo metodo do dl-apk.ps1, sem popup)
-            try {
-                $credText = "protocol=https`nhost=github.com`n`n"
-                $cred = $credText | git credential fill
-                $ghToken = ($cred -split "`n" | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
-                $ghToken = $ghToken.Trim()
-            } catch {}
-        }
-        if (-not $ghToken) { throw 'Token nao encontrado. Use -GithubToken <PAT> ou defina GITHUB_TOKEN' }
+        $ghToken = if ($GithubToken) { $GithubToken } else { $env:GITHUB_TOKEN }
+        if (-not $ghToken) { throw 'Token nao encontrado. Defina GITHUB_TOKEN no ambiente ou use -GithubToken <PAT>' }
 
         $headers = @{
             Authorization          = "Bearer $ghToken"
