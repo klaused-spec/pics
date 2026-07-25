@@ -327,6 +327,9 @@ const MemoTile = memo(function MemoTile({
           <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
         </View>
       )}
+      {item.is_transcoded && (
+        <View style={styles.hdBadge}><Text style={styles.hdBadgeText}>HD</Text></View>
+      )}
       {selectMode && (
         <View style={[styles.selectMark, isSelected && styles.selectMarkActive]}>
           <Text style={styles.selectMarkText}>{isSelected ? '✓' : ''}</Text>

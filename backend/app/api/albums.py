@@ -335,13 +335,13 @@ def serve_optimized_file(
     import mimetypes
 
     # Auth via Bearer ou ?token=
-    from app.core.security import decode_access_token
+    from app.core.security import verify_token
     auth = request.headers.get("Authorization", "")
     t = token or (auth.replace("Bearer ", "") if auth.startswith("Bearer ") else None)
     if not t:
         raise HTTPException(status_code=401, detail="Não autenticado")
     try:
-        decode_access_token(t)
+        verify_token(t)
     except Exception:
         raise HTTPException(status_code=401, detail="Token inválido")
 
