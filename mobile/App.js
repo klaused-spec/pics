@@ -660,6 +660,7 @@ function AppInner() {
   const [slideIndex, setSlideIndex] = useState(0)
   const [slidePreparing, setSlidePreparing] = useState('')
   const slideOpacity = useRef(new Animated.Value(1)).current
+  const slideOverlay = useRef(new Animated.Value(0)).current
   const slideTimerRef = useRef(null)
 
   // Mantém o espelho de items sempre atualizado.
@@ -1779,17 +1780,34 @@ function AppInner() {
   function advanceSlide(step = 1) {
     setSlideshow((current) => {
       if (!current) return current
-      // Fade out da atual (a próxima já está renderizada atrás — sem flash de fundo)
-      Animated.timing(slideOpacity, { toValue: 0, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
-        if (!finished) return
-        setSlideIndex((prev) => {
-          const total = current.items.length
-          const next = (prev + step + total) % total
-          slideOpacity.setValue(0)
-          Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
-          return next
+      const currentItem = current.items[slideIndex]
+      if (currentItem?.media_type === 'video') {
+        // Vídeo: fade-to-black via overlay, troca, fade-out do overlay
+        Animated.timing(slideOverlay, { toValue: 1, duration: 500, useNativeDriver: true }).start(({ finished }) => {
+          if (!finished) return
+          setSlideIndex((prev) => {
+            const total = current.items.length
+            const next = (prev + step + total) % total
+            slideOpacity.setValue(1)
+            return next
+          })
+          setTimeout(() => {
+            Animated.timing(slideOverlay, { toValue: 0, duration: 500, useNativeDriver: true }).start()
+          }, 100)
         })
-      })
+      } else {
+        // Foto: fade out → troca → fade in
+        Animated.timing(slideOpacity, { toValue: 0, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
+          if (!finished) return
+          setSlideIndex((prev) => {
+            const total = current.items.length
+            const next = (prev + step + total) % total
+            slideOpacity.setValue(0)
+            Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
+            return next
+          })
+        })
+      }
       return current
     })
   }
