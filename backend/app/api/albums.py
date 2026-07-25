@@ -280,6 +280,49 @@ def transcode_status(
     return get_album_transcode_status(db, album_id)
 
 
+@router.post("/{album_id}/transcode/reset")
+def transcode_reset(
+    album_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reseta todos os jobs do álbum para pending, apaga arquivos gerados e reprocessa."""
+    import shutil
+    from app.services.transcode_service import start_album_transcode
+
+    album = db.query(Album).filter(Album.id == album_id).first()
+    if not album:
+        raise HTTPException(status_code=404, detail="Álbum não encontrado")
+
+    jobs = db.query(AlbumTranscodeJob).filter_by(album_id=album_id).all()
+    for job in jobs:
+        # Apaga arquivo otimizado do disco
+        if job.output_path and os.path.exists(job.output_path):
+            try:
+                os.remove(job.output_path)
+            except Exception:
+                pass
+        job.status = "pending"
+        job.error_message = None
+        job.output_path = None
+
+    # Recalcula output_path correto para cada job
+    from app.services.transcode_service import output_path_for
+    for job in jobs:
+        media = db.query(Media).filter_by(id=job.media_id).first()
+        if media:
+            job.output_path = output_path_for(album_id, job.media_id, media.media_type)
+            media.transcoded_path = None
+
+    db.commit()
+
+    pending_ids = [j.id for j in jobs]
+    if pending_ids:
+        start_album_transcode(album_id, pending_ids)
+
+    return {"reset": len(jobs), "reprocessing": len(pending_ids)}
+
+
 @router.get("/transcode/file/{job_id}")
 def serve_optimized_file(
     job_id: int,

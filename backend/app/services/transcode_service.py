@@ -198,7 +198,7 @@ def _optimize_video(src: str, dst: str) -> None:
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
-        "-vf", "scale='min(1280,iw)':-2",
+        "-vf", "scale='trunc(min(1280,iw)/2)*2':'trunc(ow/a/2)*2'",
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "+faststart",

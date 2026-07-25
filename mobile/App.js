@@ -1707,16 +1707,18 @@ function AppInner() {
       const ts = albumTranscode[album.id]
       const jobByMediaId = {}
       if (ts?.jobs) {
-        for (const j of ts.jobs) jobByMediaId[j.media_id] = j
+        for (const j of ts.jobs) jobByMediaId[String(j.media_id)] = j
       }
+      console.log('[slideshow] ts.status=', ts?.status, 'jobs=', ts?.jobs?.length, 'jobByMediaId keys=', Object.keys(jobByMediaId).slice(0, 3))
 
       for (let index = 0; index < albumItems.length; index += 1) {
         const item = albumItems[index]
-        const job = jobByMediaId[item.id]
+        const job = jobByMediaId[String(item.id)]
         let uri
         if (job?.status === 'done') {
           // Arquivo otimizado disponível — usa direto (sem buffer, sem espera)
           uri = `${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`
+          if (index < 2) console.log('[slideshow] item', item.id, '-> opt uri', uri)
         } else if (item.media_type === 'video') {
           uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
