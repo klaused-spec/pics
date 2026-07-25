@@ -1762,11 +1762,17 @@ function AppInner() {
         if (!finished) return
         setSlideIndex((prev) => {
           const total = current.items.length
-          return (prev + step + total) % total
+          const next = (prev + step + total) % total
+          const nextItem = current.items[next]
+          slideOpacity.setValue(0)
+          if (nextItem?.media_type === 'video') {
+            // Vídeo: pula fade-in para evitar tela preta com som
+            slideOpacity.setValue(1)
+          } else {
+            Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
+          }
+          return next
         })
-        // Seta opacidade sem animação e depois faz fade in
-        slideOpacity.setValue(0)
-        Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
       })
       return current
     })
@@ -2560,7 +2566,7 @@ function AppInner() {
                 </View>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.5.2</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.5.3</Text>
             </View>
           )}
         />

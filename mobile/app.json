@@ -2,7 +2,7 @@
   "expo": {
     "name": "PICS Mobile",
     "slug": "pics-mobile",
-    "version": "0.4.9",
+    "version": "0.5.2",
     "icon": "./assets/icon.png",
     "orientation": "default",
     "userInterfaceStyle": "light",
@@ -22,7 +22,7 @@
     ],
     "android": {
       "package": "com.pics.mobile",
-      "versionCode": 14,
+      "versionCode": 16,
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",

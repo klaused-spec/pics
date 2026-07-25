@@ -103,19 +103,44 @@ def transcode_video(original_path: str) -> str:
 
     try:
         # Usar -progress pipe:1 para ler progresso
+        # Tenta usar Intel Quick Sync (h264_qsv) se disponivel; fallback para libx264 (CPU)
+        qsv_cmd = [
+            settings.ffmpeg_path,
+            "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
+            "-i", original_path,
+            "-c:v", "h264_qsv",
+            "-global_quality", "25",   # QSV usa global_quality (similar ao CRF)
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-progress", "pipe:1",
+            "-y", output_path,
+        ]
+        cpu_cmd = [
+            settings.ffmpeg_path, "-i", original_path,
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "22",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-progress", "pipe:1",
+            "-y", output_path,
+        ]
+
+        # Detecta se QSV está disponível
+        try:
+            probe = subprocess.run(
+                [settings.ffmpeg_path, "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=5
+            )
+            use_qsv = "h264_qsv" in probe.stdout
+        except Exception:
+            use_qsv = False
+
+        cmd_to_use = qsv_cmd if use_qsv else cpu_cmd
+        logger.info(f"Encoder: {'h264_qsv (Intel QSV)' if use_qsv else 'libx264 (CPU)'}")
+
         proc = subprocess.Popen(
-            [
-                settings.ffmpeg_path, "-i", original_path,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "22",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                "-progress", "pipe:1",
-                "-y",
-                output_path,
-            ],
+            cmd_to_use,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
