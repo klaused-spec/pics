@@ -43,7 +43,15 @@ if ($DownloadApk) {
 
     try {
         $ghToken = $GithubToken
-        if (-not $ghToken) { throw 'Informe o token com -GithubToken <PAT> ou defina a variavel de ambiente GITHUB_TOKEN' }
+        if (-not $ghToken) {
+            # Tenta via git credential (funciona se o git tiver PAT configurado)
+            try {
+                $credText = "protocol=https`nhost=github.com`n`n"
+                $cred = $credText | git credential fill
+                $ghToken = ($cred -split "`n" | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
+            } catch {}
+        }
+        if (-not $ghToken) { throw 'Token nao encontrado. Use -GithubToken <PAT> ou defina GITHUB_TOKEN' }
 
         $headers = @{
             Authorization          = "Bearer $ghToken"
