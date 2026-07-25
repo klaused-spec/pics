@@ -2289,9 +2289,15 @@ function AppInner() {
                   <Pressable style={styles.albumEdit} onPress={() => startRenameAlbum(album)} hitSlop={8}>
                     <Text style={styles.albumEditText}>✏️</Text>
                   </Pressable>
-                  <Pressable style={styles.albumPlay} onPress={() => startSlideshow(album)}>
-                    <Text style={styles.albumPlayText}>▶</Text>
-                  </Pressable>
+                  {(() => {
+                    const ts = albumTranscode[album.id]
+                    const ready = !ts || ts.status === 'done' || ts.status === 'none'
+                    return (
+                      <Pressable style={[styles.albumPlay, !ready && { opacity: 0.35 }]} onPress={() => ready && startSlideshow(album)} disabled={!ready}>
+                        <Text style={styles.albumPlayText}>{ready ? '▶' : '⏳'}</Text>
+                      </Pressable>
+                    )
+                  })()}
                 </Pressable>
               )
             }}
@@ -2306,9 +2312,15 @@ function AppInner() {
               <Text style={styles.backButtonText}>← Álbuns</Text>
             </Pressable>
             <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]} numberOfLines={1}>{openAlbum.name}</Text>
-            <Pressable style={styles.albumPlay} onPress={() => startSlideshow(openAlbum)}>
-              <Text style={styles.albumPlayText}>▶</Text>
-            </Pressable>
+            {(() => {
+              const ts = albumTranscode[openAlbum.id]
+              const ready = !ts || ts.status === 'done' || ts.status === 'none'
+              return (
+                <Pressable style={[styles.albumPlay, !ready && { opacity: 0.35 }]} onPress={() => ready && startSlideshow(openAlbum)} disabled={!ready}>
+                  <Text style={styles.albumPlayText}>{ready ? '▶' : '⏳'}</Text>
+                </Pressable>
+              )
+            })()}
           </View>
           {(() => {
             const ts = albumTranscode[openAlbum.id]
@@ -2552,7 +2564,7 @@ function AppInner() {
           ['albums', 'Álbuns', '📁'],
           ['settings', 'Config', '⚙️'],
         ].map(([value, label, icon]) => (
-          <Pressable key={value} style={styles.tabButton} onPress={() => { setActiveTab(value); if (value !== 'albums') setOpenAlbumId(null); if (value !== 'tree') setTreeSelected(null) }}>
+          <Pressable key={value} style={styles.tabButton} onPress={() => { setActiveTab(value); if (value !== 'albums') setOpenAlbumId(null); if (value !== 'tree') setTreeSelected(null); if (value === 'albums') loadAlbums(token, baseUrl) }}>
             <Text style={[styles.tabIcon, activeTab === value && styles.tabIconActive]}>{icon}</Text>
             <Text style={[styles.tabLabel, activeTab === value && styles.tabLabelActive]}>{label}</Text>
           </Pressable>
@@ -2576,12 +2588,14 @@ function AppInner() {
               <Text style={styles.viewerStatus}>Baixando arquivo full {Math.round(fullProgress * 100)}%</Text>
             </View>
           )}
-          {!fullLoading && !fullUri && waitingTranscode?.item?.id === selected?.id && (
+          {!fullLoading && !fullUri && waitingTranscode && waitingTranscode.item?.id === selected?.id && (
             <View style={styles.loadingFull}>
               <ActivityIndicator size="large" color="#93c5fd" />
               <Text style={styles.viewerStatus}>
                 {(() => {
-                  const ts = albumTranscode[waitingTranscode.albumId]
+                  const wt = waitingTranscode
+                  if (!wt) return '⏳ Aguardando otimização…'
+                  const ts = albumTranscode[wt.albumId]
                   const job = ts?.jobs?.find((j) => j.media_id === selected?.id)
                   if (job?.status === 'running') return `⏳ Otimizando… ${ts.percent}%`
                   return '⏳ Aguardando otimização…'
