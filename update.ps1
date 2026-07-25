@@ -46,8 +46,9 @@ if ($DownloadApk) {
         if (-not $ghToken) {
             # git credential fill (mesmo metodo do dl-apk.ps1, sem popup)
             try {
-                $cred = "protocol=https`nhost=github.com`n`n" | git credential fill
-                $ghToken = (($cred -split "`n") | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
+                $credText = "protocol=https`nhost=github.com`n`n"
+                $cred = $credText | git credential fill
+                $ghToken = ($cred -split "`n" | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
                 $ghToken = $ghToken.Trim()
             } catch {}
         }
