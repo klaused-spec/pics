@@ -2,7 +2,7 @@
   "expo": {
     "name": "PICS Mobile",
     "slug": "pics-mobile",
-    "version": "0.5.3",
+    "version": "0.5.4",
     "icon": "./assets/icon.png",
     "orientation": "default",
     "userInterfaceStyle": "light",
@@ -18,11 +18,12 @@
           "savePhotosPermission": "O PICS salva as fotos e vídeos baixados na sua galeria.",
           "isAccessMediaLocationEnabled": true
         }
-      ]
+      ],
+      "expo-video"
     ],
     "android": {
       "package": "com.pics.mobile",
-      "versionCode": 17,
+      "versionCode": 18,
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
