@@ -1,7 +1,8 @@
 param(
     [switch]$NoBuild,
     [switch]$RestartBackend,
-    [switch]$DownloadApk
+    [switch]$DownloadApk,
+    [string]$GithubToken = $env:GITHUB_TOKEN
 )
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -41,10 +42,8 @@ if ($DownloadApk) {
     $destDir = "$Root\mobile\pics-mobile-debug-apk"
 
     try {
-        $credText = "protocol=https`nhost=github.com`n`n"
-        $cred = $credText | git credential fill
-        $ghToken = ($cred -split "`n" | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
-        if (-not $ghToken) { throw 'Nao consegui obter o token do git credential' }
+        $ghToken = $GithubToken
+        if (-not $ghToken) { throw 'Informe o token com -GithubToken <PAT> ou defina a variavel de ambiente GITHUB_TOKEN' }
 
         $headers = @{
             Authorization          = "Bearer $ghToken"
