@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Audio, ResizeMode, Video } from 'expo-av'
+import { useVideoPlayer, VideoView } from 'expo-video'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ScreenOrientation from 'expo-screen-orientation'
 // SDK 54: a API clássica (documentDirectory, readAsStringAsync, etc.) migrou
@@ -545,6 +546,25 @@ async function saveItemToGalleryFile(tempUri, item) {
     localUri = info.localUri || asset.uri
   } catch (_) {}
   return { asset, uri: localUri }
+}
+
+function SlideVideo({ uri }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = false
+    p.play()
+  })
+  useEffect(() => {
+    return () => { try { player.release() } catch (_) {} }
+  }, [player])
+  return (
+    <VideoView
+      player={player}
+      style={styles.slideMedia}
+      contentFit="contain"
+      nativeControls={false}
+      surfaceType="textureView"
+    />
+  )
 }
 
 export default function App() {
@@ -1729,9 +1749,11 @@ function AppInner() {
         const thumbUri = `${base}/api/media/${item.id}/thumbnail?size=800${token ? `&token=${encodeURIComponent(token)}` : ''}`
         if (job?.status === 'done') {
           uri = `${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`
+        } else if (item.media_type === 'video') {
+          // Sem transcodificação: usa URI original do backend (pode ser lento mas toca)
+          uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
           uri = thumbUri
-          overrideType = 'image'
         }
         prepared.push({ ...item, localUri: uri, thumbUri, media_type: overrideType })
       }
@@ -1763,14 +1785,8 @@ function AppInner() {
         setSlideIndex((prev) => {
           const total = current.items.length
           const next = (prev + step + total) % total
-          const nextItem = current.items[next]
           slideOpacity.setValue(0)
-          if (nextItem?.media_type === 'video') {
-            // Vídeo: pula fade-in para evitar tela preta com som
-            slideOpacity.setValue(1)
-          } else {
-            Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
-          }
+          Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
           return next
         })
       })
@@ -2689,23 +2705,25 @@ function AppInner() {
             if (!current) return null
             return (
               <>
-                {/* Imagem/vídeo de fundo (próxima) — pré-carregada invisível */}
-                {next && next.media_type !== 'video' && (
-                  <Image
-                    source={{ uri: next.localUri }}
-                    style={[styles.slideMedia, { position: 'absolute' }]}
-                    resizeMode="contain"
-                  />
+                {/* Vídeo: renderizado FORA do Animated.View para evitar tela preta no Android */}
+                {current.media_type === 'video' && (
+                  <SlideVideo key={current.id} uri={current.localUri} />
                 )}
-                {/* Imagem/vídeo atual — faz fade out na transição */}
-                <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
-                  <Image source={{ uri: current.thumbUri || current.localUri }} style={styles.slideMedia} resizeMode="contain" />
-                  {current.media_type === 'video' && (
-                    <View style={styles.slideVideoIcon}>
-                      <Text style={styles.slideVideoIconText}>▶</Text>
-                    </View>
-                  )}
-                </Animated.View>
+                {/* Fotos: pré-carrega a próxima atrás, faz fade na atual */}
+                {current.media_type !== 'video' && (
+                  <>
+                    {next && next.media_type !== 'video' && (
+                      <Image
+                        source={{ uri: next.localUri }}
+                        style={[styles.slideMedia, { position: 'absolute' }]}
+                        resizeMode="contain"
+                      />
+                    )}
+                    <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
+                      <Image source={{ uri: current.localUri }} style={styles.slideMedia} resizeMode="contain" />
+                    </Animated.View>
+                  </>
+                )}
                 <Pressable style={[styles.slideClose, { left: 20, right: undefined }]} onPress={() => advanceSlide(-1)}>
                   <Text style={styles.slideCloseText}>‹</Text>
                 </Pressable>
