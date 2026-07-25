@@ -311,7 +311,7 @@ def transcode_reset(
     for job in jobs:
         media = db.query(Media).filter_by(id=job.media_id).first()
         if media:
-            job.output_path = output_path_for(album_id, job.media_id, media.media_type)
+            job.output_path = output_path_for(album_id, job.media_id, media.media_type, album.name, media.filename)
             media.transcoded_path = None
 
     db.commit()

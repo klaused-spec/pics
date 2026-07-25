@@ -293,6 +293,9 @@ function MediaDetail() {
             <TranscodeProgress mediaId={media.id} onDone={loadMedia} />
           ) : (
             <div className="relative flex flex-col items-center">
+              {media.is_transcoded && (
+                <div className="mb-2 px-2 py-0.5 bg-blue-600 rounded text-xs text-white font-bold self-start">HD</div>
+              )}
               <video
                 src={getStreamUrl(media.id)}
                 controls

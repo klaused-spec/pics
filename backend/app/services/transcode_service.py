@@ -36,14 +36,33 @@ def _get_album_lock(album_id: int) -> threading.Lock:
         return _album_locks[album_id]
 
 
-def output_path_for(album_id: int, media_id: int, media_type: str) -> str:
+def _safe_name(name: str) -> str:
+    """Converte nome para uso seguro em path (sem chars especiais)."""
+    import re
+    name = name.strip()
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
+    name = re.sub(r'_+', '_', name).strip('_')
+    return name or "album"
+
+
+def output_path_for(album_id: int, media_id: int, media_type: str,
+                    album_name: str = "", media_filename: str = "") -> str:
     base = settings.transcoded_videos_dir
     ext = ".jpg" if media_type == "image" else ".mp4"
-    return str(Path(base) / str(album_id) / f"{media_id}_opt{ext}")
+    folder = _safe_name(album_name) if album_name else str(album_id)
+    if media_filename:
+        stem = Path(media_filename).stem
+        fname = f"{_safe_name(stem)}_transcoded{ext}"
+    else:
+        fname = f"{media_id}_transcoded{ext}"
+    return str(Path(base) / folder / fname)
 
 
 def ensure_transcode_jobs(db: Session, album_id: int, media_ids: list[int]) -> list[AlbumTranscodeJob]:
     """Cria jobs de otimização para todas as mídias do álbum que ainda não têm job."""
+    from app.models import Album
+    album = db.query(Album).filter_by(id=album_id).first()
+    album_name = album.name if album else ""
     jobs = []
     for media_id in media_ids:
         existing = (
@@ -56,11 +75,12 @@ def ensure_transcode_jobs(db: Session, album_id: int, media_ids: list[int]) -> l
             continue
         media_item = db.query(Media).filter_by(id=media_id).first()
         media_type = media_item.media_type if media_item else "video"
+        media_filename = media_item.filename if media_item else ""
         job = AlbumTranscodeJob(
             album_id=album_id,
             media_id=media_id,
             status="pending",
-            output_path=output_path_for(album_id, media_id, media_type),
+            output_path=output_path_for(album_id, media_id, media_type, album_name, media_filename),
         )
         db.add(job)
         jobs.append(job)

@@ -171,6 +171,13 @@ function MediaGrid({ items, onSelect, selected, onSelectMultiple, thumbSize = 'm
             </div>
           )}
 
+          {/* Badge HD (otimizado) */}
+          {item.is_transcoded && (
+            <div className="absolute bottom-2 right-2 bg-blue-600/90 rounded px-1.5 py-0.5">
+              <p className="text-xs text-white font-bold">HD</p>
+            </div>
+          )}
+
           {/* Badge de transcodificação pendente */}
           {item.needs_transcode && !item.is_transcoded && (
             <div className="absolute bottom-2 right-2 bg-yellow-600/90 rounded px-1.5 py-0.5">

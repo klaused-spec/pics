@@ -1706,29 +1706,34 @@ function AppInner() {
     try {
       const base = normalizeBaseUrl(baseUrl)
       const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-      // Pega status de transcode do álbum para usar arquivos otimizados no slideshow
-      const ts = albumTranscode[album.id]
+      // Busca status atualizado do servidor antes de montar URIs
       const jobByMediaId = {}
-      if (ts?.jobs) {
-        for (const j of ts.jobs) jobByMediaId[String(j.media_id)] = j
-      }
-      console.log('[slideshow] ts.status=', ts?.status, 'jobs=', ts?.jobs?.length, 'jobByMediaId keys=', Object.keys(jobByMediaId).slice(0, 3))
+      try {
+        const tsRes = await fetch(`${base}/api/albums/${album.id}/transcode/status`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (tsRes.ok) {
+          const tsData = await tsRes.json()
+          if (tsData.jobs) {
+            for (const j of tsData.jobs) jobByMediaId[String(j.media_id)] = j
+          }
+        }
+      } catch (_) {}
+      console.log('[slideshow] fresh jobByMediaId keys=', Object.keys(jobByMediaId).slice(0, 5))
 
       for (let index = 0; index < albumItems.length; index += 1) {
         const item = albumItems[index]
         const job = jobByMediaId[String(item.id)]
         let uri
+        let overrideType = item.media_type
         if (job?.status === 'done') {
-          // Arquivo otimizado disponível — usa direto (sem buffer, sem espera)
           uri = `${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`
-          if (index < 2) console.log('[slideshow] item', item.id, '-> opt uri', uri)
-        } else if (item.media_type === 'video') {
-          uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
-          // Thumbnail grande como fallback para fotos ainda não otimizadas
-          uri = `${base}/api/media/${item.id}/thumbnail?size=1080${tokenParam}`
+          // Sem otimização: usa thumbnail (funciona para foto e vídeo — evita preto)
+          uri = `${base}/api/media/${item.id}/thumbnail?size=800${token ? `&token=${encodeURIComponent(token)}` : ''}`
+          overrideType = 'image' // trata como imagem no player
         }
-        prepared.push({ ...item, localUri: uri })
+        prepared.push({ ...item, localUri: uri, media_type: overrideType })
       }
     } catch (error) {
       Alert.alert('Slideshow', error.message)
@@ -2555,7 +2560,7 @@ function AppInner() {
                 </View>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.4.9</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.5.2</Text>
             </View>
           )}
         />
@@ -2689,6 +2694,7 @@ function AppInner() {
                 )}
                 {/* Imagem/vídeo atual — faz fade out na transição */}
                 <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
+                  {console.log('[slide render] type=', current.media_type, 'uri=', current.localUri?.slice(-60))}
                   {current.media_type === 'video' ? (
                     <Video
                       source={{ uri: current.localUri }}
