@@ -86,6 +86,13 @@ def backup_db_to_zip() -> str | None:
         log.warning(f"[backup] Banco não encontrado em '{db_file}', backup ignorado")
         return None
 
+    # Só faz backup 1x por dia — verifica se já existe zip de hoje
+    today = datetime.datetime.now().strftime("%Y%m%d")
+    existing_today = list(backup_path.glob(f"pics_{today}_*.zip"))
+    if existing_today:
+        log.info(f"[backup] Backup de hoje já existe ({existing_today[-1].name}), ignorando.")
+        return None
+
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     tmp_copy = backup_path / f"pics_{ts}.db"
     zip_path = backup_path / f"pics_{ts}.zip"
