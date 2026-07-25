@@ -32,9 +32,9 @@ if (-not $NoBuild) {
     Write-Host "`n[2/4] Build ignorado (-NoBuild)." -ForegroundColor Gray
 }
 
-# 3. Baixar APK mais recente do GitHub Actions
+# 3. Baixar APK mais recente do GitHub Actions (aguarda build se necessário)
 if ($DownloadApk) {
-    Write-Host "`n[3/4] Baixando APK do GitHub Actions..." -ForegroundColor Yellow
+    Write-Host "`n[3/4] APK do GitHub Actions..." -ForegroundColor Yellow
     $ProgressPreference = 'SilentlyContinue'
     $repo = 'klaused-spec/pics'
     $artifactName = 'pics-mobile-release-apk'
@@ -53,13 +53,27 @@ if ($DownloadApk) {
             'User-Agent'           = 'pics-update'
         }
 
-        $runs = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/actions/workflows/android-apk.yml/runs?per_page=1" -Headers $headers
-        $run = $runs.workflow_runs[0]
-        if (-not $run) { throw 'Nenhuma run encontrada' }
-        Write-Host ("  Run #{0} status={1} conclusion={2}" -f $run.run_number, $run.status, $run.conclusion)
+        # Aguarda a run mais recente terminar (polling a cada 30s, max 20 min)
+        $maxWait = 20 * 60
+        $waited = 0
+        $run = $null
+        while ($true) {
+            $runs = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/actions/workflows/android-apk.yml/runs?per_page=1" -Headers $headers
+            $run = $runs.workflow_runs[0]
+            if (-not $run) { throw 'Nenhuma run encontrada' }
 
-        if ($run.status -ne 'completed') { throw "Run ainda nao terminou (status=$($run.status)). Aguarde o build e rode de novo." }
-        if ($run.conclusion -ne 'success') { throw "Run falhou (conclusion=$($run.conclusion)). Veja os logs do GitHub Actions." }
+            if ($run.status -eq 'completed') {
+                Write-Host ("  Run #{0} concluida: {1}" -f $run.run_number, $run.conclusion)
+                break
+            }
+
+            if ($waited -ge $maxWait) { throw "Timeout aguardando build (>20 min)" }
+            Write-Host ("  Run #{0} ainda em andamento (status={1})... aguardando 30s [{2}s/{3}s]" -f $run.run_number, $run.status, $waited, $maxWait)
+            Start-Sleep -Seconds 30
+            $waited += 30
+        }
+
+        if ($run.conclusion -ne 'success') { throw "Build falhou (conclusion=$($run.conclusion)). Veja os logs do GitHub Actions." }
 
         $arts = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/actions/runs/$($run.id)/artifacts" -Headers $headers
         $art = $arts.artifacts | Where-Object { $_.name -eq $artifactName } | Select-Object -First 1
@@ -81,7 +95,7 @@ if ($DownloadApk) {
         $apk = Get-ChildItem -Path $destDir -Filter *.apk | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         Write-Host ("  APK salvo: {0} ({1:N1} MB)" -f $apk.FullName, ($apk.Length / 1MB)) -ForegroundColor Green
     } catch {
-        Write-Host "  AVISO: download do APK falhou: $_" -ForegroundColor Yellow
+        Write-Host "  ERRO no download do APK: $_" -ForegroundColor Red
     }
 } else {
     Write-Host "`n[3/4] APK ignorado (use -DownloadApk para baixar)." -ForegroundColor Gray
