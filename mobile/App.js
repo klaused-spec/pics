@@ -2820,14 +2820,14 @@ function AppInner() {
                     {next && next.media_type !== 'video' && (
                       <Image
                         source={{ uri: next.localUri }}
-                        style={[styles.slideMedia, { position: 'absolute' }]}
+                        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
                         resizeMode="contain"
                       />
                     )}
-                    <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute' }]}>
+                    <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: slideOpacity, backgroundColor: '#000' }}>
                       <Image
                         source={{ uri: current.localUri }}
-                        style={styles.slideMedia}
+                        style={{ width: '100%', height: '100%' }}
                         resizeMode="contain"
                       />
                     </Animated.View>
