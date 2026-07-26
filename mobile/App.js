@@ -1887,10 +1887,6 @@ function AppInner() {
     async function startAndPoll() {
       const base = normalizeBaseUrl(baseUrl)
       const headers = authHeaders(token)
-      // Dispara transcodificação (idempotente — não reinicia o que já está done)
-      try {
-        await fetch(`${base}/api/albums/${albumId}/transcode`, { method: 'POST', headers })
-      } catch (_) {}
 
       // Busca status inicial
       async function fetchStatus() {
@@ -2426,6 +2422,29 @@ function AppInner() {
             >
               <Text style={styles.transcodedOnlyToggleText}>{openAlbum.transcodedOnly ? '🎬 HD' : '🎬'}</Text>
             </Pressable>
+            {/* Botão para iniciar otimização HD manualmente */}
+            {(() => {
+              const ts = albumTranscode[openAlbum.id]
+              const running = ts && ts.status !== 'done' && ts.status !== 'none' && ts.status !== 'failed'
+              if (running) return null
+              return (
+                <Pressable
+                  style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 8, paddingVertical: 4 }]}
+                  onPress={async () => {
+                    try {
+                      const base = normalizeBaseUrl(baseUrl)
+                      await fetch(`${base}/api/albums/${openAlbum.id}/transcode`, { method: 'POST', headers: authHeaders(token) })
+                      // inicia polling
+                      const res = await fetch(`${base}/api/albums/${openAlbum.id}/transcode/status`, { headers: authHeaders(token) })
+                      if (res.ok) { const d = await res.json(); setAlbumTranscode((prev) => ({ ...prev, [openAlbum.id]: d })) }
+                    } catch (_) {}
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.hdBadgeText}>HD ▲</Text>
+                </Pressable>
+              )
+            })()}
             {(() => {
               const ts = albumTranscode[openAlbum.id]
               const ready = !ts || ts.status === 'done' || ts.status === 'none'
