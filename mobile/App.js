@@ -1798,8 +1798,8 @@ function AppInner() {
           // Sem transcodificação: stream direto com token via query param
           uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
-          // Imagem sem transcode: usa full via header (sem duplicar token na URL)
-          uri = `${base}/api/media/${item.id}/file`
+          // Imagem sem transcode: thumbnail grande (JPEG garantido, compatível com Android)
+          uri = `${base}/api/media/${item.id}/thumbnail?size=1920${token ? `&token=${encodeURIComponent(token)}` : ''}`
         }
         prepared.push({ ...item, localUri: uri, thumbUri, media_type: overrideType })
       }
