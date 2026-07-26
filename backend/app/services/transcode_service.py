@@ -49,13 +49,14 @@ def output_path_for(album_id: int, media_id: int, media_type: str,
                     album_name: str = "", media_filename: str = "") -> str:
     base = settings.transcoded_videos_dir
     ext = ".jpg" if media_type == "image" else ".mp4"
-    folder = _safe_name(album_name) if album_name else str(album_id)
+    # Todos os arquivos na raiz do diretório de transcodificados, sem subpastas por álbum.
+    # Usa media_id como prefixo para garantir unicidade entre álbuns.
     if media_filename:
         stem = Path(media_filename).stem
-        fname = f"{_safe_name(stem)}_transcoded{ext}"
+        fname = f"{media_id}_{_safe_name(stem)}_transcoded{ext}"
     else:
         fname = f"{media_id}_transcoded{ext}"
-    return str(Path(base) / folder / fname)
+    return str(Path(base) / fname)
 
 
 def ensure_transcode_jobs(db: Session, album_id: int, media_ids: list[int]) -> list[AlbumTranscodeJob]:
