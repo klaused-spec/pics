@@ -992,10 +992,7 @@ def _media_sync_item(media: Media, base_url: str, thumbnail_size: int) -> dict:
         "thumbnail_url": f"{base_url}/api/media/{media.id}/thumbnail?size={thumbnail_size}",
         "file_url": f"{base_url}/api/media/{media.id}/file",
         "stream_url": f"{base_url}/api/media/{media.id}/stream" if media.media_type == "video" else None,
-        "is_transcoded": bool(
-            (media.transcoded_path and os.path.isfile(media.transcoded_path))
-            or (filepath and os.path.isfile(str(Path(filepath).parent / (Path(filepath).stem + "_transcoded.mp4"))))
-        ),
+        "is_transcoded": bool(media.transcoded_path),
     }
 
 
