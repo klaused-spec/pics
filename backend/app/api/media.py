@@ -1251,7 +1251,7 @@ def hls_segment(
 
 
 @router.get("/{media_id}/thumbnail")
-def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=800), db: Session = Depends(get_db)):
+def get_thumbnail(media_id: int, size: int = Query(300, ge=50, le=1920), db: Session = Depends(get_db)):
     """Retorna thumbnail da mídia com cache persistente."""
     media = db.query(Media).get(media_id)
     if not media:

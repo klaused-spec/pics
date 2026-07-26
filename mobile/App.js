@@ -1799,7 +1799,7 @@ function AppInner() {
           uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
           // Imagem sem transcode: thumbnail grande (JPEG garantido, compatível com Android)
-          uri = `${base}/api/media/${item.id}/thumbnail?size=1920${token ? `&token=${encodeURIComponent(token)}` : ''}`
+          uri = `${base}/api/media/${item.id}/thumbnail?size=800`
         }
         prepared.push({ ...item, localUri: uri, thumbUri, media_type: overrideType })
       }
