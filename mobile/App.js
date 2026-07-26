@@ -1071,7 +1071,7 @@ function AppInner() {
       // então o sort final (ao terminar o loop) é o único pesado. Durante o loop só
       // atualizamos a contagem para a UI reagir sem travar.
       let lastFlush = Date.now()
-      const FLUSH_INTERVAL_MS = 2000
+      const FLUSH_INTERVAL_MS = 5000
       // Snapshot rápido para a UI (sem sort — mostra conforme chegam)
       const flushProgress = async () => {
         const snapshot = Array.from(itemMap.values())
@@ -1105,7 +1105,7 @@ function AppInner() {
           ? `&after_id=${encodeURIComponent(afterId)}`
           : ''
         // per_page=2000: LAN local, respostas maiores aceleram o sync inicial.
-        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=2000&size=300${sinceParam}${cursorParam}`)
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=5000&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
         const totalItems = data.total || 0
         if (baseSeed.length === 0) {
