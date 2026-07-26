@@ -2813,32 +2813,22 @@ function AppInner() {
                 {current.media_type === 'video' && (
                   <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} preloadUri={next?.localUri} />
                 )}
-                {/* Foto atual: pré-monta o próximo item (foto ou vídeo) atrás invisível */}
+                {/* Foto atual */}
                 {current.media_type !== 'video' && (
                   <>
-                    {/* Próximo é vídeo: pré-monta invisible para buffering antecipado */}
-                    {next && next.media_type === 'video' && (
-                      <View style={[styles.slideMedia, { position: 'absolute', opacity: 0 }]} pointerEvents="none">
-                        <SlideVideo key={`preload-${next.id}`} uri={next.localUri} onEnded={() => {}} />
-                      </View>
-                    )}
-                    {/* Próximo é foto: pré-carrega imagem atrás */}
+                    {/* Próximo é foto: pré-carrega atrás */}
                     {next && next.media_type !== 'video' && (
-                      <ExpoImage
-                        source={{ uri: next.localUri, headers: next.localUri.includes('?token=') ? undefined : authHeaders(token) }}
-                        style={StyleSheet.absoluteFill}
-                        contentFit="contain"
-                        cachePolicy="memory-disk"
-                        recyclingKey={`slide-next-${next.id}`}
+                      <Image
+                        source={{ uri: next.localUri }}
+                        style={[styles.slideMedia, { position: 'absolute' }]}
+                        resizeMode="contain"
                       />
                     )}
-                    <Animated.View style={[StyleSheet.absoluteFill, { opacity: slideOpacity, backgroundColor: '#000' }]}>
-                      <ExpoImage
-                        source={{ uri: current.localUri, headers: current.localUri.includes('?token=') ? undefined : authHeaders(token) }}
-                        style={StyleSheet.absoluteFill}
-                        contentFit="contain"
-                        cachePolicy="memory-disk"
-                        recyclingKey={`slide-cur-${current.id}`}
+                    <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute' }]}>
+                      <Image
+                        source={{ uri: current.localUri }}
+                        style={styles.slideMedia}
+                        resizeMode="contain"
                       />
                     </Animated.View>
                   </>
