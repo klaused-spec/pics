@@ -93,6 +93,8 @@ def ensure_transcode_jobs(db: Session, album_id: int, media_ids: list[int]) -> l
 def get_album_transcode_status(db: Session, album_id: int) -> dict:
     """Retorna progresso geral e detalhes por vídeo."""
     jobs = db.query(AlbumTranscodeJob).filter_by(album_id=album_id).all()
+    # Ignora jobs cancelados
+    jobs = [j for j in jobs if j.status != "cancelled"]
     if not jobs:
         return {"status": "none", "percent": 0, "jobs": []}
 
@@ -100,14 +102,16 @@ def get_album_transcode_status(db: Session, album_id: int) -> dict:
     done = sum(1 for j in jobs if j.status == "done")
     failed = sum(1 for j in jobs if j.status == "failed")
     running = sum(1 for j in jobs if j.status == "running")
-    pending = total - done - failed - running
+    pending = sum(1 for j in jobs if j.status == "pending")
 
     if done == total:
         overall = "done"
     elif failed == total:
         overall = "failed"
-    elif running > 0 or pending > 0:
+    elif running > 0:
         overall = "running"
+    elif pending > 0:
+        overall = "pending"
     else:
         overall = "partial"
 

@@ -2457,7 +2457,7 @@ function AppInner() {
           </View>
           {(() => {
             const ts = albumTranscode[openAlbum.id]
-            if (!ts || ts.status === 'none' || ts.status === 'done') return null
+            if (!ts || ts.status === 'none' || ts.status === 'done' || ts.status === 'pending') return null
             return (
               <View style={styles.transcodeBar}>
                 <Text style={styles.transcodeBarText}>
