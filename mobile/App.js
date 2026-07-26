@@ -555,17 +555,20 @@ function SlideVideo({ uri, onEnded, preloadUri }) {
   })
   // Pré-carrega o próximo vídeo em background para reduzir tempo de espera
   useVideoPlayer(preloadUri || uri, (p) => { p.pause() })
+  // Usa ref para evitar stale closure e re-registro desnecessário do listener
+  const onEndedRef = useRef(onEnded)
+  useEffect(() => { onEndedRef.current = onEnded }, [onEnded])
   useEffect(() => {
     // Avança slide quando o vídeo chega ao fim (playToEnd é o evento correto)
     const sub = player.addListener('playToEnd', () => {
-      onEnded?.()
+      onEndedRef.current?.()
     })
     return () => {
       sub?.remove?.()
       // Não chamar player.release() aqui: o expo-video SDK 54 gerencia o
       // ciclo de vida internamente e release() trava o próximo player.
     }
-  }, [player, onEnded])
+  }, [player])
   return (
     <VideoView
       player={player}
@@ -1840,16 +1843,10 @@ function AppInner() {
       if (!current) return current
       const currentItem = current.items[slideIndex]
       if (currentItem?.media_type === 'video') {
-        // Vídeo: fade-to-black rápido, troca imediata
-        Animated.timing(slideOverlay, { toValue: 1, duration: 250, useNativeDriver: true }).start(({ finished }) => {
-          if (!finished) return
-          setSlideIndex((prev) => {
-            const total = current.items.length
-            const next = (prev + step + total) % total
-            slideOpacity.setValue(1)
-            return next
-          })
-          Animated.timing(slideOverlay, { toValue: 0, duration: 300, useNativeDriver: true }).start()
+        // Vídeo: troca imediata sem depender do slideIndex da closure
+        setSlideIndex((prev) => {
+          const total = current.items.length
+          return (prev + step + total) % total
         })
       } else {
         // Foto: fade out → troca → fade in
@@ -1910,6 +1907,13 @@ function AppInner() {
           if (!res.ok) return
           const data = await res.json()
           setAlbumTranscode((prev) => ({ ...prev, [albumId]: data }))
+          // Marca is_transcoded=true nos items locais para os jobs done
+          if (data.jobs && data.jobs.length) {
+            const doneIds = new Set(data.jobs.filter((j) => j.status === 'done').map((j) => j.media_id))
+            if (doneIds.size > 0) {
+              setItems((cur) => cur.map((it) => doneIds.has(it.id) && !it.is_transcoded ? { ...it, is_transcoded: true } : it))
+            }
+          }
           // Para de fazer polling quando tudo está done ou falhou
           if (data.status === 'done' || data.status === 'none' || data.status === 'failed') {
             if (albumTranscodeTimerRef.current) clearInterval(albumTranscodeTimerRef.current)

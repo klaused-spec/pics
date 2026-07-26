@@ -10,16 +10,22 @@ echo ========================================
 echo.
 
 set "MODE=%~1"
-if /i "%MODE%"=="dev"  goto mode_dev
-if /i "%MODE%"=="prod" goto mode_prod
+if /i "%MODE%"=="dev"        goto mode_dev
+if /i "%MODE%"=="prod"       goto mode_prod
+if /i "%MODE%"=="update"     goto mode_update
+if /i "%MODE%"=="updateprod" goto mode_updateprod
 
 echo  Escolha o modo:
-echo    [1] dev  - HTTP puro (backend :8000 + frontend Vite :5173)
-echo    [2] prod - HTTPS via Caddy (:8443) com build de producao
+echo    [1] dev        - HTTP puro (backend :8000 + frontend Vite :5173)
+echo    [2] prod       - HTTPS via Caddy (:8443) com build de producao
+echo    [3] update     - git pull + download APK + restart app
+echo    [4] updateprod - git pull + build frontend + download APK + restart app
 echo.
-set /p CHOICE= Opcao [1/2]: 
+set /p CHOICE= Opcao [1/2/3/4]: 
 if "%CHOICE%"=="1" goto mode_dev
 if "%CHOICE%"=="2" goto mode_prod
+if "%CHOICE%"=="3" goto mode_update
+if "%CHOICE%"=="4" goto mode_updateprod
 echo [ERRO] Opcao invalida.
 pause & goto :eof
 
@@ -75,6 +81,34 @@ echo      HTTP local : http://localhost:8080
 echo      HTTPS      : https://localhost:8443
 echo.
 pause >nul
+goto :eof
+
+:mode_update
+title PICS - Update
+echo [UPDATE] Atualizando codigo...
+git -C "%ROOT:~0,-1%" pull
+echo [UPDATE] Baixando APK mais recente...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\dl-apk.ps1"
+echo [UPDATE] Reiniciando app...
+wscript.exe "%ROOT%restart-app.vbs"
+echo [OK] Update concluido.
+pause
+goto :eof
+
+:mode_updateprod
+title PICS - Update + Prod
+echo [UPDATEPROD] Atualizando codigo...
+git -C "%ROOT:~0,-1%" pull
+echo [UPDATEPROD] Build do frontend...
+pushd "%ROOT%frontend"
+call npm run build
+popd
+echo [UPDATEPROD] Baixando APK mais recente...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\dl-apk.ps1"
+echo [UPDATEPROD] Reiniciando app...
+wscript.exe "%ROOT%restart-app.vbs"
+echo [OK] Update + prod concluido.
+pause
 goto :eof
 
 :err_caddy
