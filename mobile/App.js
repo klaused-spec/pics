@@ -548,11 +548,13 @@ async function saveItemToGalleryFile(tempUri, item) {
   return { asset, uri: localUri }
 }
 
-function SlideVideo({ uri, onEnded }) {
+function SlideVideo({ uri, onEnded, preloadUri }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false
     p.play()
   })
+  // Pré-carrega o próximo vídeo em background para reduzir tempo de espera
+  useVideoPlayer(preloadUri || uri, (p) => { p.pause() })
   useEffect(() => {
     // Avança slide quando o vídeo chega ao fim (playToEnd é o evento correto)
     const sub = player.addListener('playToEnd', () => {
@@ -1823,8 +1825,8 @@ function AppInner() {
       if (!current) return current
       const currentItem = current.items[slideIndex]
       if (currentItem?.media_type === 'video') {
-        // Vídeo: fade-to-black via overlay, troca, fade-out do overlay
-        Animated.timing(slideOverlay, { toValue: 1, duration: 500, useNativeDriver: true }).start(({ finished }) => {
+        // Vídeo: fade-to-black rápido, troca imediata
+        Animated.timing(slideOverlay, { toValue: 1, duration: 250, useNativeDriver: true }).start(({ finished }) => {
           if (!finished) return
           setSlideIndex((prev) => {
             const total = current.items.length
@@ -1832,19 +1834,17 @@ function AppInner() {
             slideOpacity.setValue(1)
             return next
           })
-          setTimeout(() => {
-            Animated.timing(slideOverlay, { toValue: 0, duration: 500, useNativeDriver: true }).start()
-          }, 100)
+          Animated.timing(slideOverlay, { toValue: 0, duration: 300, useNativeDriver: true }).start()
         })
       } else {
         // Foto: fade out → troca → fade in
-        Animated.timing(slideOpacity, { toValue: 0, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
+        Animated.timing(slideOpacity, { toValue: 0, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
           if (!finished) return
           setSlideIndex((prev) => {
             const total = current.items.length
             const next = (prev + step + total) % total
             slideOpacity.setValue(0)
-            Animated.timing(slideOpacity, { toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
+            Animated.timing(slideOpacity, { toValue: 1, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
             return next
           })
         })
@@ -2809,20 +2809,28 @@ function AppInner() {
               <>
                 {/* Vídeo: renderizado FORA do Animated.View para evitar tela preta no Android */}
                 {current.media_type === 'video' && (
-                  <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} />
+                  <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} preloadUri={next?.localUri} />
                 )}
                 {/* Fotos: pré-carrega a próxima atrás, faz fade na atual */}
                 {current.media_type !== 'video' && (
                   <>
                     {next && next.media_type !== 'video' && (
-                      <Image
-                        source={{ uri: next.localUri }}
+                      <ExpoImage
+                        source={{ uri: next.localUri, headers: authHeaders(token) }}
                         style={[styles.slideMedia, { position: 'absolute' }]}
-                        resizeMode="contain"
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                        recyclingKey={`slide-next-${next.id}`}
                       />
                     )}
                     <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
-                      <Image source={{ uri: current.localUri }} style={styles.slideMedia} resizeMode="contain" />
+                      <ExpoImage
+                        source={{ uri: current.localUri, headers: authHeaders(token) }}
+                        style={styles.slideMedia}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                        recyclingKey={`slide-cur-${current.id}`}
+                      />
                     </Animated.View>
                   </>
                 )}
