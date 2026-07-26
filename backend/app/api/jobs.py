@@ -327,3 +327,39 @@ def restart_app(
 
     threading.Thread(target=do_restart, daemon=True).start()
     return {"message": "Reinicialização agendada. Backend e Caddy voltam em ~15 segundos."}
+
+
+@router.post("/update-and-restart")
+def update_and_restart(
+    current_user: dict = Depends(get_current_user),
+):
+    """Executa update.ps1 -RestartBackend -DownloadApk em background:
+    git pull, baixa APK mais recente do GitHub Actions e reinicia o backend.
+    Requer GITHUB_TOKEN no ambiente.
+    """
+    import subprocess
+    import threading
+    import sys
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+
+    def do_update():
+        script = str(root / "update.ps1")
+        if sys.platform == "win32":
+            subprocess.Popen(
+                ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script,
+                 "-RestartBackend", "-DownloadApk"],
+                creationflags=0x00000008,  # DETACHED_PROCESS
+                close_fds=True,
+                cwd=str(root),
+            )
+        else:
+            subprocess.Popen(
+                ["bash", "-c", f"cd '{root}' && bash update.sh --restart-backend --download-apk"],
+                start_new_session=True,
+                close_fds=True,
+            )
+
+    threading.Thread(target=do_update, daemon=True).start()
+    return {"message": "Atualização iniciada. git pull + APK + restart em andamento (~2 min)."}

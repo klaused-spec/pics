@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X, Cloud } from 'lucide-react'
-import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp } from '../api'
+import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp, updateAndRestart } from '../api'
 
 export default function Maintenance() {
   const [audit, setAudit] = useState(null)
@@ -74,6 +74,10 @@ export default function Maintenance() {
       else if (action === 'restart_app') {
         await restartApp()
         setMessage({ type: 'success', text: 'Reiniciando backend + Caddy. Aguarde ~15 segundos e recarregue a página.' })
+      }
+      else if (action === 'update_and_restart') {
+        await updateAndRestart()
+        setMessage({ type: 'success', text: 'Atualização iniciada: git pull + APK + restart. Aguarde ~2 minutos e recarregue a página.' })
       }
       else if (action === 'warmup_cache') {
         await startThumbnailWarmup()
@@ -226,6 +230,16 @@ export default function Maintenance() {
       label: 'Retomar Interrompidos',
       description: 'Continua jobs que foram interrompidos',
       name: 'Resume interrupted',
+    },
+    {
+      action: 'update_and_restart',
+      icon: <RotateCcw className="w-4 h-4" />,
+      label: 'Atualizar + Reiniciar',
+      description: 'git pull → baixa APK do GitHub Actions → reinicia backend',
+      name: 'Update and restart',
+      destructive: true,
+      confirm: true,
+      confirmMessage: 'Isso vai fazer git pull, baixar o APK mais recente e reiniciar o backend. Continuar?',
     },
     {
       action: 'restart_app',

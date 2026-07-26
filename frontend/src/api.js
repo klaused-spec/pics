@@ -116,6 +116,7 @@ export const bulkCorrectMediaDate = (data) => api.post('/media/bulk-date-correct
 export const startThumbnailWarmup = (size = 300) => api.post('/jobs/thumbnail-warmup', null, { params: { size } })
 export const rebootServer = () => api.post('/jobs/reboot')
 export const restartApp = () => api.post('/jobs/restart-app')
+export const updateAndRestart = () => api.post('/jobs/update-and-restart')
 export const deleteJob = (jobId) => api.delete(`/jobs/${jobId}`)
 export const deleteAllJobs = (force = false) => api.delete('/jobs/', { params: { force } })
 export const resumeInterruptedJobs = () => api.post('/jobs/resume-interrupted')
