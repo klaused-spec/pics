@@ -146,9 +146,7 @@ def get_album_media(
 
 @router.post("/{album_id}/media")
 def add_media_to_album(album_id: int, data: AlbumAddMedia, db: Session = Depends(get_db)):
-    """Adiciona mídias a um álbum e enfileira otimização das novas."""
-    from app.services.transcode_service import ensure_transcode_jobs, start_album_transcode
-
+    """Adiciona mídias a um álbum."""
     album = db.query(Album).filter(Album.id == album_id).first()
     if not album:
         raise HTTPException(status_code=404, detail="Álbum não encontrado")
@@ -168,13 +166,6 @@ def add_media_to_album(album_id: int, data: AlbumAddMedia, db: Session = Depends
         album.cover_media_id = album.media_items[0].id
 
     db.commit()
-
-    # Cria e dispara jobs para as mídias novas
-    if new_ids:
-        jobs = ensure_transcode_jobs(db, album_id, new_ids)
-        pending_ids = [j.id for j in jobs if j.status in ("pending", "failed")]
-        if pending_ids:
-            start_album_transcode(album_id, pending_ids)
 
     return {"added": added, "total": len(album.media_items)}
 

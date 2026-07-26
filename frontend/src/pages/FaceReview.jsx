@@ -224,83 +224,60 @@ function FaceReview() {
 
   return (
     <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate('/persons')}
-            className="text-gray-400 hover:text-white"
-          >
-            <ArrowLeft size={20} />
-          </button>
-          <div>
-            <h2 className="text-xl font-semibold">Revisar Rostos</h2>
-            <p className="text-sm text-gray-400">
-              {highConfidenceMode ? `${total} rostos com >= 75% confiança` : `${total} rostos pendentes`}
-            </p>
-          </div>
+      {/* Cabeçalho */}
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={() => navigate('/persons')} className="text-gray-400 hover:text-white">
+          <ArrowLeft size={20} />
+        </button>
+        <div className="flex-1">
+          <h2 className="text-xl font-semibold">Revisar Rostos</h2>
+          <p className="text-sm text-gray-400">{total} rostos pendentes</p>
         </div>
-
-        {/* Botões de ação */}
-        <div className="flex gap-2">
-          <button
-            onClick={handleRefreshSuggestions}
-            disabled={refreshingSuggestions}
-            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium text-white disabled:opacity-50"
-            title="Recalcular sugestões usando rostos confirmados"
-          >
-            <RefreshCw size={16} className={refreshingSuggestions ? 'animate-spin' : ''} />
-            {refreshingSuggestions ? 'Reaprendendo...' : 'Reaprender'}
-          </button>
-
-          {/* Modo Alta Confiança */}
+        {/* Ações em massa — discreta, à direita */}
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setHighConfidenceMode(!highConfidenceMode)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              highConfidenceMode
-                ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
-                : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              highConfidenceMode ? 'bg-yellow-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
-            title="Mostrar rostos com >= 75% de confiança"
+            title="Filtrar só rostos com >= 75% de confiança"
           >
-            <Zap size={16} />
-            {highConfidenceMode ? 'Alta Confiança' : 'Modo Normal'}
+            <Zap size={14} />
+            {highConfidenceMode ? 'Alta confiança' : 'Todos'}
           </button>
 
-          {/* Aprovar carregados (só no modo alta confiança) */}
-          {highConfidenceMode && faces.length > 0 && (
-            <button
-              onClick={handleBulkApprove}
-              disabled={approvingBulk || approvingAll}
-              className="flex items-center gap-2 px-3 py-1.5 bg-green-700 hover:bg-green-600 rounded text-sm font-medium text-white disabled:opacity-50"
-              title={`Aprovar os ${faces.length} rostos carregados`}
-            >
-              <Check size={16} />
-              {approvingBulk ? 'Aprovando...' : `Aprovar ${faces.length}`}
-            </button>
+          {highConfidenceMode && (
+            <>
+              <button
+                onClick={handleApproveAll}
+                disabled={approvingAll || approvingBulk || total === 0}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm font-medium text-white disabled:opacity-40"
+                title={`Aprovar todos os ${total} rostos com >= 75% de confiança`}
+              >
+                <CheckCheck size={14} />
+                {approvingAll ? 'Aprovando...' : `Aprovar tudo (${total})`}
+              </button>
+            </>
           )}
 
-          {/* Aprovar TODOS (só no modo alta confiança) */}
-          {highConfidenceMode && total > 0 && (
-            <button
-              onClick={handleApproveAll}
-              disabled={approvingAll || approvingBulk}
-              className="flex items-center gap-2 px-3 py-1.5 bg-green-500 hover:bg-green-400 rounded text-sm font-medium text-white disabled:opacity-50"
-              title={`Aprovar todos os ${total} rostos com >= 75% no banco`}
-            >
-              <CheckCheck size={16} />
-              {approvingAll ? 'Aprovando todos...' : `Aprovar TUDO (${total})`}
-            </button>
-          )}
-
-          {/* Limpeza */}
           <button
             onClick={handleCleanup}
             disabled={cleaningUp}
-            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm font-medium text-white disabled:opacity-50"
-            title="Remover faces de baixa confiança"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700 hover:bg-red-700 rounded text-sm font-medium text-gray-300 hover:text-white disabled:opacity-40 transition-colors"
+            title="Remover faces não confirmadas com baixa confiança"
           >
-            <Trash2 size={16} />
+            <Trash2 size={14} />
             {cleaningUp ? 'Limpando...' : 'Limpeza'}
+          </button>
+
+          <button
+            onClick={handleRefreshSuggestions}
+            disabled={refreshingSuggestions}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700 hover:bg-blue-700 rounded text-sm font-medium text-gray-300 hover:text-white disabled:opacity-40 transition-colors"
+            title="Recalcular sugestões usando rostos confirmados"
+          >
+            <RefreshCw size={14} className={refreshingSuggestions ? 'animate-spin' : ''} />
+            {refreshingSuggestions ? 'Recalculando...' : 'Reaprender'}
           </button>
         </div>
       </div>
