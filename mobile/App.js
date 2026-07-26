@@ -826,6 +826,12 @@ function AppInner() {
         headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: trimmed, media_ids: mediaIds }),
       })
+      if (response.status === 401) {
+        setToken('')
+        await persistSettings({ token: '' })
+        Alert.alert('Sessão expirada', 'Faça login novamente para criar o álbum.')
+        return
+      }
       if (!response.ok) throw new Error(`Falha ao criar álbum (${response.status})`)
       if (selectMode) {
         setSelectMode(false)
@@ -1541,9 +1547,10 @@ function AppInner() {
             setFullUri(`${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`)
             setFullLoading(false)
           } else {
-            // Ainda processando — mostra aguardando e abre automaticamente quando pronto
+            // Fallback imediato: stream direto do original enquanto aguarda transcodificação
+            setFullUri(`${base}/api/media/${item.id}/stream${tokenParam}`)
             setFullLoading(false)
-            setWaitingTranscode({ item, albumId: fromAlbumId })
+            // Monitora em background — quando pronto troca para o otimizado
             if (waitingTranscodeTimerRef.current) clearInterval(waitingTranscodeTimerRef.current)
             waitingTranscodeTimerRef.current = setInterval(async () => {
               try {
@@ -1556,7 +1563,6 @@ function AppInner() {
                   clearInterval(waitingTranscodeTimerRef.current)
                   waitingTranscodeTimerRef.current = null
                   setWaitingTranscode(null)
-                  setFullUri(`${base}/api/albums/transcode/file/${updatedJob.job_id}${tokenParam}`)
                 }
               } catch (_) {}
             }, 3000)
