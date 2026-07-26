@@ -2816,6 +2816,10 @@ function AppInner() {
                 {/* Foto atual */}
                 {current.media_type !== 'video' && (
                   <Animated.View style={{ flex: 1, width: '100%', opacity: slideOpacity, backgroundColor: '#000' }}>
+                    {/* Pré-carrega próxima foto fora do fluxo */}
+                    {next && next.media_type !== 'video' && (
+                      <Image source={{ uri: next.localUri }} style={{ width: 1, height: 1, position: 'absolute', opacity: 0 }} />
+                    )}
                     <Image
                       source={{ uri: current.localUri }}
                       style={{ flex: 1, width: '100%' }}
