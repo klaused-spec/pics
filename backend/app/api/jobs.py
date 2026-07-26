@@ -345,21 +345,33 @@ def update_and_restart(
     root = pathlib.Path(__file__).resolve().parents[3]
 
     def do_update():
-        script = str(root / "update.ps1")
-        if sys.platform == "win32":
-            subprocess.Popen(
-                ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script,
-                 "-RestartBackend", "-DownloadApk"],
-                creationflags=0x00000008,  # DETACHED_PROCESS
-                close_fds=True,
-                cwd=str(root),
-            )
-        else:
-            subprocess.Popen(
-                ["bash", "-c", f"cd '{root}' && bash update.sh --restart-backend --download-apk"],
-                start_new_session=True,
-                close_fds=True,
-            )
+        import os as _os
+        if sys.platform != "win32":
+            return  # só Windows por ora
+
+        # Script PowerShell inline: git pull + dl-apk + restart via VBS
+        # Usa git credential como fallback (dl-apk.ps1 já faz isso)
+        vbs = str(root / "restart-app.vbs")
+        dl_apk = str(root / "tools" / "dl-apk.ps1")
+        ps_script = f"""
+$ErrorActionPreference = 'Stop'
+Set-Location '{root}'
+git pull
+try {{
+    & '{dl_apk}'
+}} catch {{
+    Write-Host "Aviso: falha ao baixar APK: $_"
+}}
+Start-Sleep -Seconds 2
+wscript.exe '{vbs}'
+"""
+        subprocess.Popen(
+            ["powershell.exe", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            creationflags=0x00000008,  # DETACHED_PROCESS
+            close_fds=True,
+            cwd=str(root),
+            env={**_os.environ},
+        )
 
     threading.Thread(target=do_update, daemon=True).start()
     return {"message": "Atualização iniciada. git pull + APK + restart em andamento (~2 min)."}
