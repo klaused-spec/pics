@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     ffprobe_path: str = "ffprobe"
 
     # Diretório para vídeos transcodificados de álbuns
-    transcoded_videos_dir: str = "G:/photoide/transcoded_videos/albums"
+    transcoded_videos_dir: str = "G:/photoide/transcoded_videos"
 
     # Face detection / recognition tuning
     face_detection_min_confidence: float = 0.5
