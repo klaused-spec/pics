@@ -1104,11 +1104,17 @@ function AppInner() {
         // per_page=2000: LAN local, respostas maiores aceleram o sync inicial.
         const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=2000&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
-        // Status discreto SÓ na carga inicial (sem cache prévio). No incremental
-        // (poucas páginas) não mostra nada — o app fica com a galeria, não com telas.
+        const totalItems = data.total || 0
         if (baseSeed.length === 0) {
-          const totalItems = data.total || 0
           setSyncStatus(`Carregando biblioteca… ${Math.min(itemMap.size, totalItems)}/${totalItems}`)
+        } else {
+          // Incremental: mostra quantos itens foram atualizados/recebidos
+          const updated = itemMap.size - baseSeed.length
+          if (requestedSince) {
+            setSyncStatus(`Verificando atualizações… ${data.items.length > 0 ? `${data.items.length} item(s) novos` : 'sem novidades'}`)
+          } else {
+            setSyncStatus(`Sincronizando… ${Math.min(itemMap.size, totalItems)}/${totalItems}`)
+          }
         }
 
         for (const item of data.items) {
@@ -1160,7 +1166,14 @@ function AppInner() {
       setSyncToken(nextSyncToken)
       await persistSettings({ token: activeToken, syncToken: nextSyncToken })
       setHasPendingSync(false)
-      setSyncStatus('')
+      // Mostra resumo breve por 2s e depois limpa
+      const totalSynced = sorted.length
+      const added = totalSynced - baseSeed.length
+      const summaryMsg = requestedSince
+        ? (added > 0 ? `${added} item(s) atualizado(s)` : 'Biblioteca atualizada')
+        : `${totalSynced} itens carregados`
+      setSyncStatus(summaryMsg)
+      setTimeout(() => setSyncStatus(''), 2000)
 
       // O sync é SÓ a lista (diferença incremental via since/keyset). As
       // thumbnails vêm por expo-image (carrega da URL sob demanda e cacheia em

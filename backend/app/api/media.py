@@ -606,7 +606,7 @@ def get_sync_manifest(
     current_user: dict = Depends(get_current_user),
     since: Optional[datetime.datetime] = None,
     page: int = Query(1, ge=1),
-    per_page: int = Query(200, ge=1, le=1000),
+    per_page: int = Query(200, ge=1, le=5000),
     size: int = Query(300, ge=50, le=800),
     after_updated_at: Optional[datetime.datetime] = None,
     after_id: Optional[int] = None,
