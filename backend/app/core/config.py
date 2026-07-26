@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     # rclone (download de OneDrive/outros remotes para o source_dir)
     rclone_enabled: bool = False
     rclone_path: str = "rclone"
+    rclone_config: str = ""  # Caminho absoluto para rclone.conf (vazio = padrão do rclone)
     rclone_transfers: int = 8
     rclone_checkers: int = 16
     rclone_interval_minutes: int = 60

@@ -105,6 +105,10 @@ def _run_rclone_copy(remote: str, src: str, dest: str, exclude_file: str | None,
     source = f"{remote}:{src}" if src else f"{remote}:"
     args = [
         settings.rclone_path,
+    ]
+    if settings.rclone_config:
+        args += ["--config", settings.rclone_config]
+    args += [
         "copy",
         source,
         dest,
