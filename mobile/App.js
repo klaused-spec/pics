@@ -1792,12 +1792,14 @@ function AppInner() {
         let overrideType = item.media_type
         const thumbUri = `${base}/api/media/${item.id}/thumbnail?size=800${token ? `&token=${encodeURIComponent(token)}` : ''}`
         if (job?.status === 'done') {
+          // Arquivo otimizado — token via query param (endpoint não exige header)
           uri = `${base}/api/albums/transcode/file/${job.job_id}${tokenParam}`
         } else if (item.media_type === 'video') {
-          // Sem transcodificação: usa URI original do backend (pode ser lento mas toca)
+          // Sem transcodificação: stream direto com token via query param
           uri = `${base}/api/media/${item.id}/stream${tokenParam}`
         } else {
-          uri = thumbUri
+          // Imagem sem transcode: usa full via header (sem duplicar token na URL)
+          uri = `${base}/api/media/${item.id}/file`
         }
         prepared.push({ ...item, localUri: uri, thumbUri, media_type: overrideType })
       }
@@ -2807,16 +2809,23 @@ function AppInner() {
             if (!current) return null
             return (
               <>
-                {/* Vídeo: renderizado FORA do Animated.View para evitar tela preta no Android */}
+                {/* Vídeo atual */}
                 {current.media_type === 'video' && (
                   <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} preloadUri={next?.localUri} />
                 )}
-                {/* Fotos: pré-carrega a próxima atrás, faz fade na atual */}
+                {/* Foto atual: pré-monta o próximo item (foto ou vídeo) atrás invisível */}
                 {current.media_type !== 'video' && (
                   <>
+                    {/* Próximo é vídeo: pré-monta invisible para buffering antecipado */}
+                    {next && next.media_type === 'video' && (
+                      <View style={[styles.slideMedia, { position: 'absolute', opacity: 0 }]} pointerEvents="none">
+                        <SlideVideo key={`preload-${next.id}`} uri={next.localUri} onEnded={() => {}} />
+                      </View>
+                    )}
+                    {/* Próximo é foto: pré-carrega imagem atrás */}
                     {next && next.media_type !== 'video' && (
                       <ExpoImage
-                        source={{ uri: next.localUri, headers: authHeaders(token) }}
+                        source={{ uri: next.localUri, headers: next.localUri.includes('?token=') ? undefined : authHeaders(token) }}
                         style={[styles.slideMedia, { position: 'absolute' }]}
                         contentFit="contain"
                         cachePolicy="memory-disk"
@@ -2825,7 +2834,7 @@ function AppInner() {
                     )}
                     <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
                       <ExpoImage
-                        source={{ uri: current.localUri, headers: authHeaders(token) }}
+                        source={{ uri: current.localUri, headers: current.localUri.includes('?token=') ? undefined : authHeaders(token) }}
                         style={styles.slideMedia}
                         contentFit="contain"
                         cachePolicy="memory-disk"
