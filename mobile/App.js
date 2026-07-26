@@ -2826,16 +2826,16 @@ function AppInner() {
                     {next && next.media_type !== 'video' && (
                       <ExpoImage
                         source={{ uri: next.localUri, headers: next.localUri.includes('?token=') ? undefined : authHeaders(token) }}
-                        style={[styles.slideMedia, { position: 'absolute' }]}
+                        style={StyleSheet.absoluteFill}
                         contentFit="contain"
                         cachePolicy="memory-disk"
                         recyclingKey={`slide-next-${next.id}`}
                       />
                     )}
-                    <Animated.View style={[styles.slideMedia, { opacity: slideOpacity, position: 'absolute', backgroundColor: '#000' }]}>
+                    <Animated.View style={[StyleSheet.absoluteFill, { opacity: slideOpacity, backgroundColor: '#000' }]}>
                       <ExpoImage
                         source={{ uri: current.localUri, headers: current.localUri.includes('?token=') ? undefined : authHeaders(token) }}
-                        style={styles.slideMedia}
+                        style={StyleSheet.absoluteFill}
                         contentFit="contain"
                         cachePolicy="memory-disk"
                         recyclingKey={`slide-cur-${current.id}`}
