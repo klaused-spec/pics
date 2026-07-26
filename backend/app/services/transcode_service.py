@@ -177,9 +177,12 @@ def _optimize_job(job_id: int) -> None:
         if os.path.isfile(output):
             job.status = "done"
             logger.info(f"[opt] job={job_id} media={job.media_id} done")
+            import datetime as _dt
             media_rec = db.query(Media).filter_by(id=job.media_id).first()
             if media_rec:
                 media_rec.transcoded_path = output
+                # Atualiza updated_at para o sync incremental do app detectar a mudança
+                media_rec.updated_at = _dt.datetime.utcnow()
         else:
             job.status = "failed"
             job.error_message = "Arquivo de saída não gerado"
