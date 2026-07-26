@@ -554,17 +554,14 @@ function SlideVideo({ uri, onEnded }) {
     p.play()
   })
   useEffect(() => {
-    // Avança slide automaticamente quando o vídeo termina
-    const sub = player.addListener('playingChange', (payload) => {
-      if (payload.isPlaying === false && payload.oldIsPlaying === true) {
-        // vídeo parou naturalmente (chegou ao fim)
-        onEnded?.()
-      }
+    // Avança slide quando o vídeo chega ao fim (playToEnd é o evento correto)
+    const sub = player.addListener('playToEnd', () => {
+      onEnded?.()
     })
     return () => {
       sub?.remove?.()
-      // Não chamar player.release() aqui: o expo-video SDK 54 já gerencia o
-      // ciclo de vida internamente e release() pode travar o próximo player.
+      // Não chamar player.release() aqui: o expo-video SDK 54 gerencia o
+      // ciclo de vida internamente e release() trava o próximo player.
     }
   }, [player, onEnded])
   return (

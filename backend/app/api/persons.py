@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 import cv2
 import numpy as np
 
@@ -328,28 +329,40 @@ def list_pending_faces(
     db: Session = Depends(get_db),
 ):
     """Lista rostos não identificados e não ignorados, com sugestões."""
-    query = db.query(Face).filter(
-        Face.is_ignored == False,
-        Face.media_items.any(),
-    ).order_by(Face.id.desc())
+    from sqlalchemy import or_, text
+    from app.models.models import media_faces
 
-    # Inclui tanto faces sem pessoa quanto com sugestão pendente
-    from sqlalchemy import or_
-    query = query.filter(
-        or_(
-            Face.person_id.is_(None),
-            Face.is_confirmed == False,
+    # Subquery: primeiro media_id associado a cada face (MIN para ser determinístico)
+    mf_sub = (
+        db.query(
+            media_faces.c.face_id,
+            func.min(media_faces.c.media_id).label("media_id"),
         )
+        .group_by(media_faces.c.face_id)
+        .subquery()
     )
 
-    total = query.count()
-    faces = query.offset((page - 1) * per_page).limit(per_page).all()
+    base_filter = [
+        Face.is_ignored == False,
+        or_(Face.person_id.is_(None), Face.is_confirmed == False),
+    ]
 
-    items = []
-    for f in faces:
-        # Pega a primeira media associada para contexto
-        media = f.media_items[0] if f.media_items else None
-        items.append({
+    total = db.query(func.count(Face.id)).filter(*base_filter).scalar()
+
+    rows = (
+        db.query(Face, Media.id.label("mid"), Media.filename.label("mfname"))
+        .outerjoin(mf_sub, Face.id == mf_sub.c.face_id)
+        .outerjoin(Media, Media.id == mf_sub.c.media_id)
+        .outerjoin(Person, Face.person_id == Person.id)
+        .filter(*base_filter)
+        .order_by(Face.id.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    items = [
+        {
             "id": f.id,
             "bbox": {"x": f.bbox_x, "y": f.bbox_y, "w": f.bbox_width, "h": f.bbox_height},
             "person_id": f.person_id,
@@ -357,9 +370,11 @@ def list_pending_faces(
             "confidence": f.confidence,
             "is_confirmed": f.is_confirmed,
             "is_ignored": f.is_ignored,
-            "media_id": media.id if media else None,
-            "media_filename": media.filename if media else None,
-        })
+            "media_id": mid,
+            "media_filename": mfname,
+        }
+        for f, mid, mfname in rows
+    ]
 
     return {"total": total, "page": page, "per_page": per_page, "items": items}
 
@@ -473,28 +488,49 @@ def list_high_confidence_faces(
     Lista rostos não confirmados com confiança >= min_confidence (padrão 75%).
     Ideal para aprovação em massa.
     """
-    query = db.query(Face).filter(
+    from app.models.models import media_faces
+
+    mf_sub = (
+        db.query(
+            media_faces.c.face_id,
+            func.min(media_faces.c.media_id).label("media_id"),
+        )
+        .group_by(media_faces.c.face_id)
+        .subquery()
+    )
+
+    base_filter = [
         Face.person_id.isnot(None),
         Face.is_confirmed == False,
         Face.is_ignored == False,
         Face.confidence.isnot(None),
         Face.confidence >= min_confidence,
-    ).order_by(Face.confidence.desc())
+    ]
 
-    total = query.count()
-    faces = query.offset((page - 1) * per_page).limit(per_page).all()
+    total = db.query(func.count(Face.id)).filter(*base_filter).scalar()
 
-    items = []
-    for f in faces:
-        media = f.media_items[0] if f.media_items else None
-        items.append({
+    rows = (
+        db.query(Face, Media.id.label("mid"), Media.filename.label("mfname"))
+        .outerjoin(mf_sub, Face.id == mf_sub.c.face_id)
+        .outerjoin(Media, Media.id == mf_sub.c.media_id)
+        .filter(*base_filter)
+        .order_by(Face.confidence.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    items = [
+        {
             "id": f.id,
             "person_id": f.person_id,
             "person_name": f.person.name if f.person else None,
             "confidence": f.confidence,
-            "media_id": media.id if media else None,
-            "media_filename": media.filename if media else None,
-        })
+            "media_id": mid,
+            "media_filename": mfname,
+        }
+        for f, mid, mfname in rows
+    ]
 
     return {"total": total, "page": page, "per_page": per_page, "items": items}
 
