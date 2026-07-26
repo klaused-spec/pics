@@ -2815,23 +2815,13 @@ function AppInner() {
                 )}
                 {/* Foto atual */}
                 {current.media_type !== 'video' && (
-                  <>
-                    {/* Próximo é foto: pré-carrega atrás */}
-                    {next && next.media_type !== 'video' && (
-                      <Image
-                        source={{ uri: next.localUri }}
-                        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-                        resizeMode="contain"
-                      />
-                    )}
-                    <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: slideOpacity, backgroundColor: '#000' }}>
-                      <Image
-                        source={{ uri: current.localUri }}
-                        style={{ width: '100%', height: '100%' }}
-                        resizeMode="contain"
-                      />
-                    </Animated.View>
-                  </>
+                  <Animated.View style={{ flex: 1, width: '100%', opacity: slideOpacity, backgroundColor: '#000' }}>
+                    <Image
+                      source={{ uri: current.localUri }}
+                      style={{ flex: 1, width: '100%' }}
+                      resizeMode="contain"
+                    />
+                  </Animated.View>
                 )}
                 <Pressable style={[styles.slideClose, { left: 20, right: undefined }]} onPress={() => advanceSlide(-1)}>
                   <Text style={styles.slideCloseText}>‹</Text>
