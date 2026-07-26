@@ -465,7 +465,7 @@ def get_face_thumbnail(
 def list_high_confidence_faces(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    per_page: int = Query(100, ge=1, le=500),
+    per_page: int = Query(100, ge=1, le=5000),
     min_confidence: float = Query(0.75, ge=0.0, le=1.0),
     db: Session = Depends(get_db),
 ):
@@ -534,6 +534,33 @@ def bulk_approve_faces(
         "message": f"{approved_count} rostos aprovados",
         "approved_count": approved_count,
         "total_requested": len(data.face_ids),
+        **refresh_result,
+    }
+
+
+@router.post("/faces/bulk-approve-all")
+def bulk_approve_all_faces(
+    current_user: dict = Depends(get_current_user),
+    min_confidence: float = Query(0.75, ge=0.0, le=1.0),
+    db: Session = Depends(get_db),
+):
+    """
+    Aprova TODOS os rostos com confiança >= min_confidence no banco, sem limite de paginação.
+    """
+    approved_count = db.query(Face).filter(
+        Face.person_id.isnot(None),
+        Face.is_confirmed == False,
+        Face.is_ignored == False,
+        Face.confidence.isnot(None),
+        Face.confidence >= min_confidence,
+    ).update({Face.is_confirmed: True, Face.confidence: 1.0}, synchronize_session=False)
+
+    db.commit()
+    refresh_result = refresh_face_suggestions(db)
+
+    return {
+        "message": f"{approved_count} rostos aprovados",
+        "approved_count": approved_count,
         **refresh_result,
     }
 

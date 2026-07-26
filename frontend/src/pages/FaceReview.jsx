@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, getPendingFaces, getFaceThumbnailUrl, assignFace, confirmFace, ignoreFace, unassignFace, getPersons, createPerson, getHighConfidenceFaces, bulkApproveFaces, cleanupLowConfidenceFaces, refreshFaceSuggestions } from '../api'
-import { ArrowLeft, Check, X, EyeOff, UserPlus, Zap, Trash2, RefreshCw } from 'lucide-react'
+import { api, getPendingFaces, getFaceThumbnailUrl, assignFace, confirmFace, ignoreFace, unassignFace, getPersons, createPerson, getHighConfidenceFaces, bulkApproveFaces, bulkApproveAllFaces, cleanupLowConfidenceFaces, refreshFaceSuggestions } from '../api'
+import { ArrowLeft, Check, X, EyeOff, UserPlus, Zap, Trash2, RefreshCw, CheckCheck } from 'lucide-react'
 
 function FaceReview() {
   const [faces, setFaces] = useState([])
@@ -13,58 +13,84 @@ function FaceReview() {
   const [thumbUrls, setThumbUrls] = useState({})
   const [highConfidenceMode, setHighConfidenceMode] = useState(false)
   const [approvingBulk, setApprovingBulk] = useState(false)
+  const [approvingAll, setApprovingAll] = useState(false)
   const [cleaningUp, setCleaningUp] = useState(false)
   const [refreshingSuggestions, setRefreshingSuggestions] = useState(false)
+  const [hcPage, setHcPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const thumbFetchRef = useRef(0)
   const navigate = useNavigate()
 
   useEffect(() => {
-    loadData()
+    setHcPage(1)
+    setFaces([])
+    setThumbUrls({})
+    loadData(1, true)
   }, [highConfidenceMode])
 
-  async function loadData() {
-    setLoading(true)
+  // Batch thumbnail fetch: processes faces in groups of 20 to avoid overwhelming the backend
+  async function fetchThumbsBatch(facesList, existingMap = {}) {
+    const token = ++thumbFetchRef.current
+    const BATCH = 20
+    const newMap = { ...existingMap }
+    for (let i = 0; i < facesList.length; i += BATCH) {
+      if (thumbFetchRef.current !== token) return // cancelled by newer load
+      const batch = facesList.slice(i, i + BATCH)
+      const results = await Promise.allSettled(
+        batch.map(f => api.get(`/persons/faces/${f.id}/thumbnail`, { params: { size: 160 }, responseType: 'blob' }))
+      )
+      results.forEach((r, idx) => {
+        const fid = batch[idx].id
+        if (r.status === 'fulfilled') {
+          try { newMap[fid] = URL.createObjectURL(r.value.data) } catch { newMap[fid] = null }
+        } else {
+          newMap[fid] = null
+        }
+      })
+      setThumbUrls(prev => ({ ...prev, ...newMap }))
+    }
+  }
+
+  async function loadData(page = 1, reset = false) {
+    if (page === 1) setLoading(true)
+    else setLoadingMore(true)
     try {
       let facesRes
       if (highConfidenceMode) {
-        facesRes = await getHighConfidenceFaces({ per_page: 500, min_confidence: 0.75 })
+        facesRes = await getHighConfidenceFaces({ per_page: 100, page, min_confidence: 0.75 })
       } else {
         facesRes = await getPendingFaces({ per_page: 100 })
       }
       
-      const personsRes = await getPersons({ per_page: 200 })
-      const facesList = facesRes.data.items
-      setFaces(facesList)
-      // Fetch thumbnails via authenticated XHR to include Authorization header
-      // and create blob URLs to use as image src (avoids 403 from <img> tags)
-      const fetchThumbs = async () => {
-        // revoke previous URLs
-        Object.values(thumbUrls).forEach(url => { try { URL.revokeObjectURL(url) } catch(e){} })
-        const results = await Promise.allSettled(
-          facesList.map(f => api.get(`/persons/faces/${f.id}/thumbnail`, { params: { size: 200 }, responseType: 'blob' }))
-        )
-        const newMap = {}
-        results.forEach((r, i) => {
-          const fid = facesList[i].id
-          if (r.status === 'fulfilled') {
-            try {
-              const blob = r.value.data
-              newMap[fid] = URL.createObjectURL(blob)
-            } catch (e) {
-              newMap[fid] = null
-            }
-          } else {
-            newMap[fid] = null
-          }
-        })
-        setThumbUrls(newMap)
-      }
-      fetchThumbs()
+      const [personsRes] = await Promise.all([
+        page === 1 ? getPersons({ per_page: 200 }) : Promise.resolve(null),
+      ])
+
+      const newFaces = facesRes.data.items
+      const prevFaces = reset ? [] : faces
+      const merged = reset ? newFaces : [...prevFaces, ...newFaces]
+
+      setFaces(merged)
       setTotal(facesRes.data.total)
-      setPersons(personsRes.data.items || personsRes.data)
+      if (personsRes) setPersons(personsRes.data.items || personsRes.data)
+
+      // Revoke old blob URLs only on full reset
+      if (reset) {
+        Object.values(thumbUrls).forEach(url => { try { URL.revokeObjectURL(url) } catch {} })
+        setThumbUrls({})
+      }
+      fetchThumbsBatch(newFaces, reset ? {} : thumbUrls)
     } catch (err) {
       console.error(err)
     }
     setLoading(false)
+    setLoadingMore(false)
+  }
+
+  async function handleLoadMore() {
+    const nextPage = hcPage + 1
+    setHcPage(nextPage)
+    await loadData(nextPage, false)
   }
 
   async function handleConfirm(faceId) {
@@ -90,10 +116,8 @@ function FaceReview() {
   async function handleReject(faceId) {
     try {
       await unassignFace(faceId)
-      // Recarrega para atualizar sugestão
-      const res = await getPendingFaces({ per_page: 100 })
-      setFaces(res.data.items)
-      setTotal(res.data.total)
+      setFaces(prev => prev.filter(f => f.id !== faceId))
+      setTotal(prev => prev - 1)
     } catch (err) {
       console.error(err)
     }
@@ -131,19 +155,35 @@ function FaceReview() {
   }
 
   async function handleBulkApprove() {
-    if (!window.confirm(`Aprovar ${faces.length} rostos com >= 75% de confiança?`)) return
+    if (!window.confirm(`Aprovar ${faces.length} rostos carregados com >= 75% de confiança?`)) return
     
     setApprovingBulk(true)
     try {
       const faceIds = faces.map(f => f.id)
       await bulkApproveFaces(faceIds)
-      // Recarrega
-      await loadData()
+      setHcPage(1)
+      await loadData(1, true)
     } catch (err) {
       console.error(err)
       alert('Erro ao aprovar em massa: ' + err.message)
     }
     setApprovingBulk(false)
+  }
+
+  async function handleApproveAll() {
+    if (!window.confirm(`Aprovar TODOS os ${total} rostos com >= 75% de confiança no banco? Esta ação não pode ser desfeita.`)) return
+
+    setApprovingAll(true)
+    try {
+      const res = await bulkApproveAllFaces(0.75)
+      alert(`${res.data.approved_count} rostos aprovados.`)
+      setHcPage(1)
+      await loadData(1, true)
+    } catch (err) {
+      console.error(err)
+      alert('Erro ao aprovar todos: ' + err.message)
+    }
+    setApprovingAll(false)
   }
 
   async function handleRefreshSuggestions() {
@@ -226,16 +266,29 @@ function FaceReview() {
             {highConfidenceMode ? 'Alta Confiança' : 'Modo Normal'}
           </button>
 
-          {/* Aprovar em Massa (só no modo alta confiança) */}
+          {/* Aprovar carregados (só no modo alta confiança) */}
           {highConfidenceMode && faces.length > 0 && (
             <button
               onClick={handleBulkApprove}
-              disabled={approvingBulk}
-              className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm font-medium text-white disabled:opacity-50"
-              title="Aprovar todos os rostos de alta confiança"
+              disabled={approvingBulk || approvingAll}
+              className="flex items-center gap-2 px-3 py-1.5 bg-green-700 hover:bg-green-600 rounded text-sm font-medium text-white disabled:opacity-50"
+              title={`Aprovar os ${faces.length} rostos carregados`}
             >
               <Check size={16} />
               {approvingBulk ? 'Aprovando...' : `Aprovar ${faces.length}`}
+            </button>
+          )}
+
+          {/* Aprovar TODOS (só no modo alta confiança) */}
+          {highConfidenceMode && total > 0 && (
+            <button
+              onClick={handleApproveAll}
+              disabled={approvingAll || approvingBulk}
+              className="flex items-center gap-2 px-3 py-1.5 bg-green-500 hover:bg-green-400 rounded text-sm font-medium text-white disabled:opacity-50"
+              title={`Aprovar todos os ${total} rostos com >= 75% no banco`}
+            >
+              <CheckCheck size={16} />
+              {approvingAll ? 'Aprovando todos...' : `Aprovar TUDO (${total})`}
             </button>
           )}
 
@@ -378,6 +431,19 @@ function FaceReview() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Carregar mais (alta confiança, paginado) */}
+      {highConfidenceMode && faces.length > 0 && faces.length < total && (
+        <div className="flex justify-center mt-6">
+          <button
+            onClick={handleLoadMore}
+            disabled={loadingMore}
+            className="px-6 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm font-medium text-white disabled:opacity-50"
+          >
+            {loadingMore ? 'Carregando...' : `Carregar mais (${faces.length} de ${total})`}
+          </button>
         </div>
       )}
     </div>

@@ -548,14 +548,25 @@ async function saveItemToGalleryFile(tempUri, item) {
   return { asset, uri: localUri }
 }
 
-function SlideVideo({ uri }) {
+function SlideVideo({ uri, onEnded }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false
     p.play()
   })
   useEffect(() => {
-    return () => { try { player.release() } catch (_) {} }
-  }, [player])
+    // Avança slide automaticamente quando o vídeo termina
+    const sub = player.addListener('playingChange', (payload) => {
+      if (payload.isPlaying === false && payload.oldIsPlaying === true) {
+        // vídeo parou naturalmente (chegou ao fim)
+        onEnded?.()
+      }
+    })
+    return () => {
+      sub?.remove?.()
+      // Não chamar player.release() aqui: o expo-video SDK 54 já gerencia o
+      // ciclo de vida internamente e release() pode travar o próximo player.
+    }
+  }, [player, onEnded])
   return (
     <VideoView
       player={player}
@@ -754,6 +765,7 @@ function AppInner() {
         id: String(album.id),
         name: album.name,
         itemIds: (album.item_ids || []).map((id) => Number(id)),
+        transcodedOnly: !!album.transcoded_only,
       }))
       setAlbums(mapped)
       await cacheAlbums(mapped)
@@ -1722,6 +1734,32 @@ function AppInner() {
       Alert.alert('Slideshow', 'Este álbum está vazio.')
       return
     }
+
+    // Se o álbum é "só transcodificados", filtra itens sem job done
+    let filteredItems = albumItems
+    if (album.transcodedOnly) {
+      const base = normalizeBaseUrl(baseUrl)
+      let jobByMediaId = {}
+      try {
+        const tsRes = await fetch(`${base}/api/albums/${album.id}/transcode/status`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (tsRes.ok) {
+          const tsData = await tsRes.json()
+          for (const j of tsData.jobs || []) jobByMediaId[String(j.media_id)] = j
+        }
+      } catch (_) {}
+      filteredItems = albumItems.filter((item) => {
+        if (item.media_type !== 'video') return true // fotos sempre incluídas
+        const job = jobByMediaId[String(item.id)]
+        return job?.status === 'done'
+      })
+      if (!filteredItems.length) {
+        Alert.alert('Slideshow', 'Nenhum vídeo transcodificado disponível ainda.')
+        return
+      }
+    }
+
     setSlidePreparing(`Preparando…`)
     const prepared = []
     try {
@@ -1742,8 +1780,8 @@ function AppInner() {
       } catch (_) {}
       console.log('[slideshow] fresh jobByMediaId keys=', Object.keys(jobByMediaId).slice(0, 5))
 
-      for (let index = 0; index < albumItems.length; index += 1) {
-        const item = albumItems[index]
+      for (let index = 0; index < filteredItems.length; index += 1) {
+        const item = filteredItems[index]
         const job = jobByMediaId[String(item.id)]
         let uri
         let overrideType = item.media_type
@@ -1815,8 +1853,13 @@ function AppInner() {
   useEffect(() => {
     if (!slideshow) return
     if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
-    // Vídeos agora mostram thumbnail — avançam pelo timer igual às fotos
-    slideTimerRef.current = setTimeout(() => advanceSlide(1), Math.max(2, slideSeconds) * 1000)
+    const current = slideshow.items[slideIndex]
+    // Vídeos: avançam via onEnded do SlideVideo; timer de fallback usa duração real + 3s
+    // Fotos: avançam pelo timer configurado pelo usuário
+    const delay = current?.media_type === 'video'
+      ? ((current.duration_seconds || 30) + 3) * 1000
+      : Math.max(2, slideSeconds) * 1000
+    slideTimerRef.current = setTimeout(() => advanceSlide(1), delay)
     return () => {
       if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
     }
@@ -2361,6 +2404,25 @@ function AppInner() {
               <Text style={styles.backButtonText}>← Álbuns</Text>
             </Pressable>
             <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]} numberOfLines={1}>{openAlbum.name}</Text>
+            {/* Toggle: só transcodificados no slideshow */}
+            <Pressable
+              style={[styles.transcodedOnlyToggle, openAlbum.transcodedOnly && styles.transcodedOnlyToggleOn]}
+              onPress={async () => {
+                const newVal = !openAlbum.transcodedOnly
+                try {
+                  const url = apiUrl(baseUrl, `/albums/${openAlbum.id}`)
+                  await fetchWithTimeout(url, {
+                    method: 'PUT',
+                    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ transcoded_only: newVal }),
+                  })
+                } catch (_) {}
+                setAlbums((prev) => prev.map((a) => a.id === openAlbum.id ? { ...a, transcodedOnly: newVal } : a))
+              }}
+              hitSlop={8}
+            >
+              <Text style={styles.transcodedOnlyToggleText}>{openAlbum.transcodedOnly ? '🎬 HD' : '🎬'}</Text>
+            </Pressable>
             {(() => {
               const ts = albumTranscode[openAlbum.id]
               const ready = !ts || ts.status === 'done' || ts.status === 'none'
@@ -2725,7 +2787,7 @@ function AppInner() {
               <>
                 {/* Vídeo: renderizado FORA do Animated.View para evitar tela preta no Android */}
                 {current.media_type === 'video' && (
-                  <SlideVideo key={current.id} uri={current.localUri} />
+                  <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} />
                 )}
                 {/* Fotos: pré-carrega a próxima atrás, faz fade na atual */}
                 {current.media_type !== 'video' && (
@@ -2855,6 +2917,9 @@ const styles = StyleSheet.create({
   albumCount: { color: '#64748b', fontSize: 12, marginTop: 2 },
   albumPlay: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
   albumPlayText: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
+  transcodedOnlyToggle: { height: 34, paddingHorizontal: 10, borderRadius: 17, backgroundColor: '#eef2f7', alignItems: 'center', justifyContent: 'center', marginLeft: 8, borderWidth: 1, borderColor: '#e2e8f0' },
+  transcodedOnlyToggleOn: { backgroundColor: '#1e3a5f', borderColor: '#2563eb' },
+  transcodedOnlyToggleText: { fontSize: 13, fontWeight: '800' },
   albumEdit: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#eef2f7', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
   albumEditText: { fontSize: 16 },
   newAlbumButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginHorizontal: 16, marginBottom: 12, height: 46, borderRadius: 12, borderWidth: 1, borderColor: '#c7d2fe', backgroundColor: '#eef2ff' },

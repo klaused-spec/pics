@@ -86,6 +86,7 @@ export const mergePersons = (keepId, mergeId) => api.post('/persons/merge', { ke
 export const runClustering = () => api.post('/persons/cluster')
 export const getHighConfidenceFaces = (params) => api.get('/persons/faces/high-confidence', { params })
 export const bulkApproveFaces = (faceIds) => api.post('/persons/faces/bulk-approve', { face_ids: faceIds })
+export const bulkApproveAllFaces = (minConfidence = 0.75) => api.post('/persons/faces/bulk-approve-all', null, { params: { min_confidence: minConfidence } })
 export const refreshFaceSuggestions = () => api.post('/persons/faces/refresh-suggestions')
 export const cleanupLowConfidenceFaces = (minConfidence = 0.40) => api.post('/persons/cleanup', null, { params: { min_confidence: minConfidence } })
 

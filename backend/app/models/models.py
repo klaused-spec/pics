@@ -166,6 +166,7 @@ class Album(Base):
     name = Column(String, nullable=False, index=True)
     description = Column(Text, nullable=True)
     cover_media_id = Column(Integer, ForeignKey("media.id"), nullable=True)
+    transcoded_only = Column(Boolean, default=False, nullable=False, server_default='0')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

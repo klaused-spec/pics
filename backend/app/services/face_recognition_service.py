@@ -613,7 +613,6 @@ def confirm_face_identity(face_id: int, db: Session) -> Face:
     db.commit()
 
     _propagate_suggestions(face, person_id, db)
-    refresh_face_suggestions(db)
     return face
 
 

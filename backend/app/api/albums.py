@@ -27,6 +27,7 @@ class AlbumUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     cover_media_id: Optional[int] = None
+    transcoded_only: Optional[bool] = None
 
 
 class AlbumAddMedia(BaseModel):
@@ -94,6 +95,8 @@ def update_album(album_id: int, data: AlbumUpdate, db: Session = Depends(get_db)
         album.description = data.description
     if data.cover_media_id is not None:
         album.cover_media_id = data.cover_media_id
+    if data.transcoded_only is not None:
+        album.transcoded_only = data.transcoded_only
 
     db.commit()
     db.refresh(album)
@@ -214,6 +217,7 @@ def _album_to_dict(album: Album, db: Session, include_items: bool = False) -> di
         "name": album.name,
         "description": album.description,
         "cover_media_id": album.cover_media_id,
+        "transcoded_only": bool(album.transcoded_only),
         "media_count": count,
         "created_at": album.created_at.isoformat() if album.created_at else None,
         "updated_at": album.updated_at.isoformat() if album.updated_at else None,
