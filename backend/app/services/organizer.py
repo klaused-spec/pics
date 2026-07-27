@@ -240,8 +240,10 @@ def get_video_metadata(filepath: str) -> dict:
     """Extrai metadados de vídeo usando ffprobe (duração, dimensões, codec)."""
     import subprocess, json
     try:
+        from app.core.config import settings as _settings
+        ffprobe = getattr(_settings, 'ffprobe_path', 'ffprobe')
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
+            [ffprobe, "-v", "quiet", "-print_format", "json",
              "-show_format", "-show_streams", filepath],
             capture_output=True, text=True, timeout=30,
         )

@@ -987,6 +987,7 @@ function AppInner() {
     const ids = Array.from(selectedIds)
     cancelSelection()
     const base = normalizeBaseUrl(baseUrl)
+    const moved = []
     let failed = 0
     for (const id of ids) {
       try {
@@ -994,15 +995,18 @@ function AppInner() {
           method: 'DELETE',
           headers: authHeaders(token),
         })
-        if (!res.ok) failed++
+        if (res.ok) moved.push(id)
+        else failed++
       } catch (_) {
         failed++
       }
     }
-    // Remove os itens da lista local imediatamente
-    setItems((cur) => cur.filter((it) => !ids.includes(it.id)))
+    // Remove da lista local apenas os que foram movidos com sucesso
+    if (moved.length > 0) {
+      setItems((cur) => cur.filter((it) => !moved.includes(it.id)))
+    }
     if (failed > 0) {
-      Alert.alert('Lixeira', `${ids.length - failed} movido(s). ${failed} falhou.`)
+      Alert.alert('Lixeira', `${moved.length} movido(s). ${failed} falhou(aram).`)
     }
   }
 
@@ -2305,19 +2309,20 @@ function AppInner() {
 
       {selectMode && (
         <View style={styles.selectionBar}>
-          <Pressable style={styles.selectionCancel} onPress={cancelSelection}>
-            <Text style={styles.selectionCancelText}>✕</Text>
+          <Pressable style={styles.selectionCancel} onPress={cancelSelection} onLongPress={() => {}}>
+            <Text selectable={false} style={styles.selectionCancelText}>✕</Text>
           </Pressable>
-          <Text style={styles.selectionText}>{selectedIds.size} selecionada(s)</Text>
+          <Text selectable={false} style={styles.selectionText}>{selectedIds.size} selecionada(s)</Text>
           <Pressable
             style={styles.selectionNew}
             onPress={() => {
               if (!selectedIds.size) return
               saveSelectedToGallery()
             }}
+            onLongPress={() => {}}
             disabled={savingGallery}
           >
-            {savingGallery ? <ActivityIndicator color="#93c5fd" /> : <Text style={styles.selectionNewText}>⬇ Galeria</Text>}
+            {savingGallery ? <ActivityIndicator color="#93c5fd" /> : <Text selectable={false} style={styles.selectionNewText}>⬇ Galeria</Text>}
           </Pressable>
           <Pressable
             style={styles.selectionNew}
@@ -2325,8 +2330,9 @@ function AppInner() {
               if (!selectedIds.size) return
               createAlbum()
             }}
+            onLongPress={() => {}}
           >
-            <Text style={styles.selectionNewText}>＋ Novo</Text>
+            <Text selectable={false} style={styles.selectionNewText}>＋ Novo</Text>
           </Pressable>
           <Pressable
             style={styles.selectionAction}
@@ -2339,8 +2345,9 @@ function AppInner() {
               ]
               Alert.alert('Adicionar ao álbum', 'Escolha um álbum ou crie um novo', buttons)
             }}
+            onLongPress={() => {}}
           >
-            <Text style={styles.selectionActionText}>Adicionar</Text>
+            <Text selectable={false} style={styles.selectionActionText}>Adicionar</Text>
           </Pressable>
           <Pressable
             style={[styles.selectionAction, { backgroundColor: 'rgba(239,68,68,0.15)' }]}
@@ -2356,8 +2363,9 @@ function AppInner() {
                 ]
               )
             }}
+            onLongPress={() => {}}
           >
-            <Text style={[styles.selectionActionText, { color: '#ef4444' }]}>🗑 Lixeira</Text>
+            <Text selectable={false} style={[styles.selectionActionText, { color: '#ef4444' }]}>Lixeira</Text>
           </Pressable>
         </View>
       )}
