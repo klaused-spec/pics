@@ -598,6 +598,8 @@ function AppInner() {
   // Espelho de `items` sempre atualizado, para evitar closures obsoletas
   // (ex.: sync ao retomar do background usava o `items` inicial vazio e zerava tudo).
   const itemsRef = useRef([])
+  // Espelho do token — lido em funções assíncronas para evitar closure stale.
+  const tokenRef = useRef('')
   const [syncToken, setSyncToken] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncStatus, setSyncStatus] = useState('')
@@ -682,6 +684,10 @@ function AppInner() {
   useEffect(() => {
     itemsRef.current = items
   }, [items])
+
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
 
   useEffect(() => {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {})
@@ -953,7 +959,7 @@ function AppInner() {
       { text: 'Excluir', style: 'destructive', onPress: async () => {
         try {
           const url = apiUrl(baseUrl, `/albums/${albumId}`)
-          const response = await fetchWithTimeout(url, { method: 'DELETE', headers: authHeaders(token) })
+          const response = await fetchWithTimeout(url, { method: 'DELETE', headers: authHeaders(tokenRef.current) })
           if (!response.ok && response.status !== 204) throw new Error(`Falha ao excluir (${response.status})`)
           if (openAlbumId === albumId) setOpenAlbumId(null)
           await loadAlbums()
@@ -987,16 +993,23 @@ function AppInner() {
     const ids = Array.from(selectedIds)
     cancelSelection()
     const base = normalizeBaseUrl(baseUrl)
+    const currentToken = tokenRef.current
     const moved = []
     let failed = 0
     for (const id of ids) {
       try {
         const res = await fetch(`${base}/api/media/${id}`, {
           method: 'DELETE',
-          headers: authHeaders(token),
+          headers: authHeaders(currentToken),
         })
-        if (res.ok) moved.push(id)
-        else failed++
+        if (res.ok) {
+          moved.push(id)
+        } else if (res.status === 401 || res.status === 403) {
+          Alert.alert('Sessão expirada', 'Faça login novamente para mover itens para a lixeira.')
+          return
+        } else {
+          failed++
+        }
       } catch (_) {
         failed++
       }
@@ -1007,6 +1020,8 @@ function AppInner() {
     }
     if (failed > 0) {
       Alert.alert('Lixeira', `${moved.length} movido(s). ${failed} falhou(aram).`)
+    } else if (moved.length > 0) {
+      Alert.alert('Lixeira', `${moved.length} item(s) movido(s) para a lixeira.`)
     }
   }
 

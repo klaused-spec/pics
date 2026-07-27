@@ -5,6 +5,7 @@ Gerencia jobs de scan, organização, análise IA e detecção facial.
 import os
 import logging
 import datetime
+import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
@@ -460,6 +461,11 @@ def run_face_detection(batch_size: int = None) -> int:
         db.close()
 
 
+# Semáforo global: limita ffmpegs simultâneos no warmup para não saturar CPU.
+# Máximo = metade dos núcleos lógicos, mínimo 1, máximo 4.
+_VIDEO_WARMUP_SEM = threading.Semaphore(max(1, min(4, (os.cpu_count() or 2) // 2)))
+
+
 def _warmup_one(task: dict, size: int) -> bool:
     """Gera UM thumbnail (chamado em paralelo por threads). Sem acesso ao DB.
 
@@ -486,7 +492,9 @@ def _warmup_one(task: dict, size: int) -> bool:
         if task["media_type"] == "image":
             return bool(generate_image_thumbnail(source_path, cache_path, size=size))
         thumb_tmp = cache_path + ".tmp"
-        if generate_video_thumbnail(source_path, thumb_tmp):
+        with _VIDEO_WARMUP_SEM:  # no máximo N ffmpegs em paralelo
+            video_ok = generate_video_thumbnail(source_path, thumb_tmp)
+        if video_ok:
             try:
                 img = Image.open(thumb_tmp)
                 img.thumbnail((size, size))
@@ -561,8 +569,9 @@ def run_thumbnail_warmup(size: int = 300) -> int:
         job.total_items = len(tasks)
         db.commit()
 
-        # Nº de workers: I/O + CPU misto. min(32, cpus*4) é um bom teto p/ disco.
-        max_workers = min(32, (os.cpu_count() or 4) * 4)
+        # Workers para imagens (I/O bound): moderado para não travar o disco.
+        # Vídeos são controlados pelo semáforo _VIDEO_WARMUP_SEM separadamente.
+        max_workers = min(8, (os.cpu_count() or 2) * 2)
         processed = 0
         COMMIT_EVERY = 200
 

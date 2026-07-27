@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # Autenticação JWT
     secret_key: str = "your-secret-key-change-in-production"  # MUDAR EM PRODUÇÃO
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 1440  # 24 horas
+    access_token_expire_minutes: int = 43200  # 30 dias
 
     # Frontend - Domínio/hosts permitidos para CORS
     allowed_hosts: str = "localhost,127.0.0.1"  # Separado por vírgula
