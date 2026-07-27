@@ -217,18 +217,52 @@ def _optimize_image(src: str, dst: str) -> None:
         img.save(dst, "JPEG", quality=82, optimize=True, progressive=True)
 
 
+_qsv_available_cache: bool | None = None
+
+def _qsv_available() -> bool:
+    global _qsv_available_cache
+    if _qsv_available_cache is None:
+        try:
+            probe = subprocess.run(
+                [settings.ffmpeg_path, "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=5
+            )
+            _qsv_available_cache = "h264_qsv" in probe.stdout
+        except Exception:
+            _qsv_available_cache = False
+    return _qsv_available_cache
+
+
 def _optimize_video(src: str, dst: str) -> None:
-    """Transcodifica vídeo para H.264/AAC com faststart (começa a tocar imediatamente)."""
+    """Transcodifica vídeo para H.264/AAC com faststart. Usa Intel QSV se disponivel."""
+    scale_filter = "scale='trunc(min(1280,iw)/2)*2':'trunc(ow/a/2)*2'"
+    if _qsv_available():
+        cmd = [
+            settings.ffmpeg_path, "-y",
+            "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
+            "-i", src,
+            "-vf", f"scale_qsv=w='trunc(min(1280,iw)/2)*2':h=-1",
+            "-c:v", "h264_qsv",
+            "-global_quality", "25",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            dst,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=3600)
+        if result.returncode == 0:
+            logger.info(f"[opt] h264_qsv OK: {Path(dst).name}")
+            return
+        logger.warning(f"[opt] QSV falhou, usando CPU: {result.stderr.decode(errors='replace')[-200:]}")
+    # Fallback CPU — limita threads para não saturar todos os núcleos
+    import os as _os
+    cpu_threads = str(max(1, (_os.cpu_count() or 4) // 2))
     cmd = [
-        settings.ffmpeg_path,
-        "-y",
+        settings.ffmpeg_path, "-y",
         "-i", src,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
-        "-vf", "scale='trunc(min(1280,iw)/2)*2':'trunc(ow/a/2)*2'",
-        "-c:a", "aac",
-        "-b:a", "128k",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-threads", cpu_threads,
+        "-vf", scale_filter,
+        "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         dst,
     ]

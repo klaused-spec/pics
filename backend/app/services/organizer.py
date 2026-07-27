@@ -280,8 +280,10 @@ def generate_video_thumbnail(video_path: str, output_path: str) -> bool:
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+        from app.core.config import settings as _settings
+        ffmpeg = getattr(_settings, 'ffmpeg_path', 'ffmpeg')
         result = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(seek_time), "-i", video_path,
+            [ffmpeg, "-y", "-ss", str(seek_time), "-i", video_path,
              "-vframes", "1", "-q:v", "3", "-f", "image2", output_path],
             capture_output=True, timeout=30,
         )
