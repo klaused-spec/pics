@@ -983,6 +983,29 @@ function AppInner() {
     setSelectedIds(new Set())
   }
 
+  async function moveSelectedToTrash() {
+    const ids = Array.from(selectedIds)
+    cancelSelection()
+    const base = normalizeBaseUrl(baseUrl)
+    let failed = 0
+    for (const id of ids) {
+      try {
+        const res = await fetch(`${base}/api/media/${id}`, {
+          method: 'DELETE',
+          headers: authHeaders(token),
+        })
+        if (!res.ok) failed++
+      } catch (_) {
+        failed++
+      }
+    }
+    // Remove os itens da lista local imediatamente
+    setItems((cur) => cur.filter((it) => !ids.includes(it.id)))
+    if (failed > 0) {
+      Alert.alert('Lixeira', `${ids.length - failed} movido(s). ${failed} falhou.`)
+    }
+  }
+
   async function refreshCachedFullIds() {
     try {
       // O que está "offline" agora é o que existe na pasta "Pics" da galeria.
@@ -2318,6 +2341,23 @@ function AppInner() {
             }}
           >
             <Text style={styles.selectionActionText}>Adicionar</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.selectionAction, { backgroundColor: 'rgba(239,68,68,0.15)' }]}
+            onPress={() => {
+              if (!selectedIds.size) return
+              const count = selectedIds.size
+              Alert.alert(
+                'Mover para lixeira',
+                `Mover ${count} item(s) para a lixeira? Os arquivos não serão apagados permanentemente.`,
+                [
+                  { text: 'Cancelar', style: 'cancel' },
+                  { text: 'Mover', style: 'destructive', onPress: () => moveSelectedToTrash() },
+                ]
+              )
+            }}
+          >
+            <Text style={[styles.selectionActionText, { color: '#ef4444' }]}>🗑 Lixeira</Text>
           </Pressable>
         </View>
       )}
