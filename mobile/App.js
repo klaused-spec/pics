@@ -2817,7 +2817,7 @@ function AppInner() {
                 </View>
               </View>
 
-              <Text style={styles.versionText}>PICS Mobile v0.5.3</Text>
+              <Text style={styles.versionText}>PICS Mobile v0.5.4</Text>
             </View>
           )}
         />
