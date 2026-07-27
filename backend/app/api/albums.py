@@ -219,11 +219,38 @@ def _album_to_dict(album: Album, db: Session, include_items: bool = False) -> di
             row[0]
             for row in db.query(album_media.c.media_id)
             .filter(album_media.c.album_id == album.id)
+            .order_by(album_media.c.position.asc().nullslast(), album_media.c.media_id.asc())
             .all()
         ]
         result["item_ids"] = item_ids
 
     return result
+
+
+class AlbumOrder(BaseModel):
+    media_ids: list[int]  # IDs na nova ordem desejada
+
+
+@router.put("/{album_id}/order")
+def reorder_album(
+    album_id: int,
+    data: AlbumOrder,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Define a ordem dos itens do álbum. `media_ids` é a lista completa na nova ordem."""
+    album = db.query(Album).filter(Album.id == album_id).first()
+    if not album:
+        raise HTTPException(status_code=404, detail="Álbum não encontrado")
+    for position, media_id in enumerate(data.media_ids):
+        db.execute(
+            album_media.update()
+            .where(album_media.c.album_id == album_id)
+            .where(album_media.c.media_id == media_id)
+            .values(position=position)
+        )
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/{album_id}/transcode")

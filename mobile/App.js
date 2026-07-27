@@ -650,6 +650,8 @@ function AppInner() {
 
   const [albums, setAlbums] = useState([])
   const [openAlbumId, setOpenAlbumId] = useState(null)
+  const [reorderMode, setReorderMode] = useState(false)
+  const [reorderItems, setReorderItems] = useState([])
   // Mídias de cada álbum vindas do backend (mapa albumId -> array de itens).
   // O álbum pode conter mídias que NÃO estão na lista sincronizada `items`
   // (duplicadas/não-organizadas), então buscamos direto do servidor ao abrir.
@@ -702,7 +704,7 @@ function AppInner() {
       if (selected) { setSelected(null); return true }
       if (selectMode) { cancelSelection(); return true }
       if (activeTab === 'tree' && treeSelected) { setTreeSelected(null); setTimeout(() => treeListRef.current?.scrollToOffset({ offset: treeScrollOffset.current, animated: false }), 50); return true }
-      if (activeTab === 'albums' && openAlbumId) { setOpenAlbumId(null); return true }
+      if (activeTab === 'albums' && openAlbumId) { setOpenAlbumId(null); setReorderMode(false); return true }
       if (activeTab !== 'photos') { setActiveTab('photos'); return true }
       return false
     }
@@ -864,6 +866,45 @@ function AppInner() {
       await loadAlbums()
     } catch (error) {
       Alert.alert('Álbuns', networkErrorMessage(error, apiUrl(baseUrl, `/albums/${albumId}/media`)))
+    }
+  }
+
+  function startReorder(album) {
+    const albumItems = (albumMedia[album.id] && albumMedia[album.id].length)
+      ? albumMedia[album.id]
+      : album.itemIds.map((id) => items.find((it) => it.id === id)).filter(Boolean)
+    setReorderItems(albumItems)
+    setReorderMode(true)
+  }
+
+  function moveReorderItem(index, direction) {
+    setReorderItems((prev) => {
+      const next = [...prev]
+      const swapIndex = index + direction
+      if (swapIndex < 0 || swapIndex >= next.length) return prev
+      ;[next[index], next[swapIndex]] = [next[swapIndex], next[index]]
+      return next
+    })
+  }
+
+  async function saveAlbumOrder(albumId) {
+    try {
+      const url = apiUrl(baseUrl, `/albums/${albumId}/order`)
+      const response = await fetchWithTimeout(url, {
+        method: 'PUT',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ media_ids: reorderItems.map((it) => it.id) }),
+      })
+      if (!response.ok) throw new Error(`Falha ao salvar ordem (${response.status})`)
+      // Atualiza a ordem local do álbum
+      setAlbums((prev) => prev.map((a) => a.id === albumId
+        ? { ...a, itemIds: reorderItems.map((it) => it.id) }
+        : a
+      ))
+      setAlbumMedia((prev) => ({ ...prev, [albumId]: reorderItems }))
+      setReorderMode(false)
+    } catch (error) {
+      Alert.alert('Erro', error.message)
     }
   }
 
@@ -2406,7 +2447,7 @@ function AppInner() {
       {activeTab === 'albums' && openAlbum && (
         <View style={styles.tabContent}>
           <View style={styles.albumHeaderBar}>
-            <Pressable style={styles.backButton} onPress={() => setOpenAlbumId(null)}>
+            <Pressable style={styles.backButton} onPress={() => { setOpenAlbumId(null); setReorderMode(false) }}>
               <Text style={styles.backButtonText}>← Álbuns</Text>
             </Pressable>
             <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]} numberOfLines={1}>{openAlbum.name}</Text>
@@ -2429,6 +2470,23 @@ function AppInner() {
             >
               <Text style={styles.transcodedOnlyToggleText}>{openAlbum.transcodedOnly ? '🎬 HD' : '🎬'}</Text>
             </Pressable>
+            {/* Botão reordenar */}
+            <Pressable
+              style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(99,102,241,0.85)' }]}
+              onPress={() => reorderMode ? saveAlbumOrder(openAlbum.id) : startReorder(openAlbum)}
+              hitSlop={8}
+            >
+              <Text style={styles.hdBadgeText}>{reorderMode ? '💾' : '⇅'}</Text>
+            </Pressable>
+            {reorderMode && (
+              <Pressable
+                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(239,68,68,0.85)' }]}
+                onPress={() => setReorderMode(false)}
+                hitSlop={8}
+              >
+                <Text style={styles.hdBadgeText}>✕</Text>
+              </Pressable>
+            )}
             {/* Botão para iniciar otimização HD manualmente */}
             {(() => {
               const ts = albumTranscode[openAlbum.id]
@@ -2475,59 +2533,80 @@ function AppInner() {
               </View>
             )
           })()}
-          <FlatList
-            data={chunkItems(
-              (albumMedia[openAlbum.id] && albumMedia[openAlbum.id].length)
-                ? albumMedia[openAlbum.id]
-                : openAlbum.itemIds.map((id) => items.find((it) => it.id === id)).filter(Boolean),
-              3,
-            )}
-            keyExtractor={(_, index) => `album-row-${index}`}
-            contentContainerStyle={styles.grid}
-            ListEmptyComponent={(
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyEmoji}>🖼️</Text>
-                <Text style={styles.emptyTitle}>Álbum vazio</Text>
-                <Text style={styles.emptyText}>Segure fotos na aba Fotos e adicione a este álbum.</Text>
-              </View>
-            )}
-            renderItem={({ item: rowItems }) => (
-              <View style={styles.tileRow}>
-                {rowItems.map((item) => (
-                  <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item, openAlbum.id)} onLongPress={() => {
-                    Alert.alert('Remover do álbum', item.filename, [
-                      { text: 'Cancelar', style: 'cancel' },
-                      { text: 'Remover', style: 'destructive', onPress: () => removeFromAlbum(openAlbum.id, item.id) },
-                    ])
-                  }} delayLongPress={250}>
-                    {item.thumbnail_failed ? (
-                      <View style={[styles.thumb, styles.thumbMissing]}><Text style={styles.thumbMissingText}>SEM THUMB</Text></View>
-                    ) : (
-                      <ExpoImage source={thumbSource(item)} style={styles.thumb} contentFit="cover" cachePolicy="memory-disk" recyclingKey={String(item.id)} />
-                    )}
-                    {item.media_type === 'video' && (
-                      <View style={styles.videoBadge}>
-                        <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
-                      </View>
-                    )}
-                    {(() => {
-                      const ts = albumTranscode[openAlbum.id]
-                      const job = ts?.jobs?.find((j) => j.media_id === item.id)
-                      if (!job) return null
-                      if (job.status === 'done') return (
-                        <View style={styles.hdBadge}><Text style={styles.hdBadgeText}>HD</Text></View>
-                      )
-                      if (job.status === 'running') return (
-                        <View style={[styles.hdBadge, { backgroundColor: 'rgba(251,191,36,0.85)' }]}><Text style={styles.hdBadgeText}>⏳</Text></View>
-                      )
-                      return null
-                    })()}
+          {reorderMode ? (
+            <FlatList
+              data={reorderItems}
+              keyExtractor={(item) => String(item.id)}
+              contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 12 }}
+              renderItem={({ item, index }) => (
+                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, marginBottom: 8, padding: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                  <ExpoImage source={thumbSource(item)} style={{ width: 52, height: 52, borderRadius: 6 }} contentFit="cover" cachePolicy="memory-disk" />
+                  <Text style={{ flex: 1, marginLeft: 10, fontSize: 13, color: '#0f172a' }} numberOfLines={1}>{item.filename}</Text>
+                  <Text style={{ color: '#94a3b8', fontSize: 12, marginRight: 8 }}>{index + 1}</Text>
+                  <Pressable onPress={() => moveReorderItem(index, -1)} disabled={index === 0} style={{ padding: 8, opacity: index === 0 ? 0.3 : 1 }}>
+                    <Text style={{ fontSize: 18 }}>↑</Text>
                   </Pressable>
-                ))}
-                {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
-              </View>
-            )}
-          />
+                  <Pressable onPress={() => moveReorderItem(index, 1)} disabled={index === reorderItems.length - 1} style={{ padding: 8, opacity: index === reorderItems.length - 1 ? 0.3 : 1 }}>
+                    <Text style={{ fontSize: 18 }}>↓</Text>
+                  </Pressable>
+                </View>
+              )}
+            />
+          ) : (
+            <FlatList
+              data={chunkItems(
+                (albumMedia[openAlbum.id] && albumMedia[openAlbum.id].length)
+                  ? albumMedia[openAlbum.id]
+                  : openAlbum.itemIds.map((id) => items.find((it) => it.id === id)).filter(Boolean),
+                3,
+              )}
+              keyExtractor={(_, index) => `album-row-${index}`}
+              contentContainerStyle={styles.grid}
+              ListEmptyComponent={(
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyEmoji}>🖼️</Text>
+                  <Text style={styles.emptyTitle}>Álbum vazio</Text>
+                  <Text style={styles.emptyText}>Segure fotos na aba Fotos e adicione a este álbum.</Text>
+                </View>
+              )}
+              renderItem={({ item: rowItems }) => (
+                <View style={styles.tileRow}>
+                  {rowItems.map((item) => (
+                    <Pressable key={item.id} style={styles.tile} onPress={() => openItem(item, openAlbum.id)} onLongPress={() => {
+                      Alert.alert('Remover do álbum', item.filename, [
+                        { text: 'Cancelar', style: 'cancel' },
+                        { text: 'Remover', style: 'destructive', onPress: () => removeFromAlbum(openAlbum.id, item.id) },
+                      ])
+                    }} delayLongPress={250}>
+                      {item.thumbnail_failed ? (
+                        <View style={[styles.thumb, styles.thumbMissing]}><Text style={styles.thumbMissingText}>SEM THUMB</Text></View>
+                      ) : (
+                        <ExpoImage source={thumbSource(item)} style={styles.thumb} contentFit="cover" cachePolicy="memory-disk" recyclingKey={String(item.id)} />
+                      )}
+                      {item.media_type === 'video' && (
+                        <View style={styles.videoBadge}>
+                          <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
+                        </View>
+                      )}
+                      {(() => {
+                        const ts = albumTranscode[openAlbum.id]
+                        const job = ts?.jobs?.find((j) => j.media_id === item.id)
+                        if (!job) return null
+                        if (job.status === 'done') return (
+                          <View style={styles.hdBadge}><Text style={styles.hdBadgeText}>HD</Text></View>
+                        )
+                        if (job.status === 'running') return (
+                          <View style={[styles.hdBadge, { backgroundColor: 'rgba(251,191,36,0.85)' }]}><Text style={styles.hdBadgeText}>⏳</Text></View>
+                        )
+                        return null
+                      })()}
+                    </Pressable>
+                  ))}
+                  {Array.from({ length: 3 - rowItems.length }).map((_, index) => <View key={`empty-${index}`} style={styles.tile} />)}
+                </View>
+              )}
+            />
+          )}
         </View>
       )}
 

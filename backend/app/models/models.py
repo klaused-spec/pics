@@ -29,6 +29,7 @@ album_media = Table(
     Base.metadata,
     Column("album_id", Integer, ForeignKey("albums.id"), primary_key=True),
     Column("media_id", Integer, ForeignKey("media.id"), primary_key=True),
+    Column("position", Integer, nullable=True),
 )
 
 
