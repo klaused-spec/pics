@@ -1105,20 +1105,10 @@ function AppInner() {
           ? `&after_id=${encodeURIComponent(afterId)}`
           : ''
         // per_page=2000: LAN local, respostas maiores aceleram o sync inicial.
-        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=5000&size=300${sinceParam}${cursorParam}`)
+        const manifestUrl = apiUrl(activeBaseUrl, `/media/sync/manifest?page=${page}&per_page=2000&size=300${sinceParam}${cursorParam}`)
         const data = await fetchManifestPage(manifestUrl, activeToken)
         const totalItems = data.total || 0
-        if (baseSeed.length === 0) {
-          setSyncStatus(`Carregando biblioteca… ${Math.min(itemMap.size, totalItems)}/${totalItems}`)
-        } else {
-          // Incremental: mostra quantos itens foram atualizados/recebidos
-          const updated = itemMap.size - baseSeed.length
-          if (requestedSince) {
-            setSyncStatus(`Verificando atualizações… ${data.items.length > 0 ? `${data.items.length} item(s) novos` : 'sem novidades'}`)
-          } else {
-            setSyncStatus(`Sincronizando… ${Math.min(itemMap.size, totalItems)}/${totalItems}`)
-          }
-        }
+        setSyncStatus(`Sincronizando… ${Math.min(itemMap.size, totalItems)}/${totalItems}`)
 
         for (const item of data.items) {
           const previous = itemMap.get(item.id)
@@ -1148,10 +1138,8 @@ function AppInner() {
           afterId = data.items[data.items.length - 1].id
         }
 
-        // Mostra as fotos que chegaram periodicamente — sem sort, para não bloquear a UI.
-        if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
-          await flushProgress()
-        }
+        // Yield para a UI respirar entre páginas sem copiar o array inteiro
+        await new Promise((r) => setTimeout(r, 0))
 
         if (!data.has_more) break
         // Guarda anti-loop: se o cursor não avançou, para (não deveria ocorrer
