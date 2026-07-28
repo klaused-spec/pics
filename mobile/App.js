@@ -1002,7 +1002,8 @@ function AppInner() {
           method: 'DELETE',
           headers: authHeaders(currentToken),
         }, 15000)
-        if (res.ok) {
+        if (res.ok || res.status === 404) {
+          // 404 = já não existe no servidor, remove da lista igualmente
           moved.push(id)
         } else if (res.status === 401 || res.status === 403) {
           Alert.alert('Sessão expirada', 'Faça login novamente para mover itens para a lixeira.')
