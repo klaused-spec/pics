@@ -2332,24 +2332,18 @@ function AppInner() {
           <Text selectable={false} style={styles.selectionText}>{selectedIds.size} selecionada(s)</Text>
           <Pressable
             style={styles.selectionNew}
-            onPress={() => {
-              if (!selectedIds.size) return
-              saveSelectedToGallery()
-            }}
+            onPress={() => { if (!selectedIds.size) return; saveSelectedToGallery() }}
             onLongPress={() => {}}
             disabled={savingGallery}
           >
-            {savingGallery ? <ActivityIndicator color="#93c5fd" /> : <Text selectable={false} style={styles.selectionNewText}>⬇ Galeria</Text>}
+            {savingGallery ? <ActivityIndicator size="small" color="#93c5fd" /> : <Text selectable={false} style={styles.selectionNewText}>⬇</Text>}
           </Pressable>
           <Pressable
             style={styles.selectionNew}
-            onPress={() => {
-              if (!selectedIds.size) return
-              createAlbum()
-            }}
+            onPress={() => { if (!selectedIds.size) return; createAlbum() }}
             onLongPress={() => {}}
           >
-            <Text selectable={false} style={styles.selectionNewText}>＋ Novo</Text>
+            <Text selectable={false} style={styles.selectionNewText}>＋</Text>
           </Pressable>
           <Pressable
             style={styles.selectionAction}
@@ -2364,10 +2358,10 @@ function AppInner() {
             }}
             onLongPress={() => {}}
           >
-            <Text selectable={false} style={styles.selectionActionText}>Adicionar</Text>
+            <Text selectable={false} style={styles.selectionActionText}>📁</Text>
           </Pressable>
           <Pressable
-            style={[styles.selectionAction, { backgroundColor: 'rgba(239,68,68,0.15)' }]}
+            style={[styles.selectionAction, { backgroundColor: 'rgba(239,68,68,0.18)' }]}
             onPress={() => {
               if (!selectedIds.size) return
               const count = selectedIds.size
@@ -2382,7 +2376,7 @@ function AppInner() {
             }}
             onLongPress={() => {}}
           >
-            <Text selectable={false} style={[styles.selectionActionText, { color: '#ef4444' }]}>Lixeira</Text>
+            <Text selectable={false} style={[styles.selectionActionText, { color: '#ef4444' }]}>🗑️</Text>
           </Pressable>
         </View>
       )}
@@ -3071,14 +3065,14 @@ const styles = StyleSheet.create({
   selectMark: { position: 'absolute', right: 8, top: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#ffffff', backgroundColor: 'rgba(15,23,42,0.35)', alignItems: 'center', justifyContent: 'center' },
   selectMarkActive: { backgroundColor: '#2563eb', borderColor: '#ffffff' },
   selectMarkText: { color: '#ffffff', fontSize: 12, fontWeight: '900' },
-  selectionBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: 'rgba(15,23,42,0.82)', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
-  selectionText: { color: '#e2e8f0', fontWeight: '700', flex: 1, fontSize: 13 },
-  selectionNew: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.1)' },
-  selectionNewText: { color: '#93c5fd', fontWeight: '700', fontSize: 13 },
-  selectionAction: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, backgroundColor: '#2563eb' },
-  selectionActionText: { color: '#ffffff', fontWeight: '700', fontSize: 13 },
-  selectionCancel: { paddingHorizontal: 8, paddingVertical: 7 },
-  selectionCancelText: { color: '#94a3b8', fontWeight: '700', fontSize: 16 },
+  selectionBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(15,23,42,0.88)', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
+  selectionText: { color: '#e2e8f0', fontWeight: '700', flex: 1, fontSize: 12 },
+  selectionNew: { width: 36, height: 36, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center' },
+  selectionNewText: { color: '#93c5fd', fontWeight: '700', fontSize: 18 },
+  selectionAction: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#2563eb', alignItems: 'center', justifyContent: 'center' },
+  selectionActionText: { color: '#ffffff', fontWeight: '700', fontSize: 18 },
+  selectionCancel: { width: 32, height: 36, alignItems: 'center', justifyContent: 'center' },
+  selectionCancelText: { color: '#94a3b8', fontWeight: '700', fontSize: 18 },
 
   // Albums
   albumRow: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 10, padding: 12, borderRadius: 14, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#eef2f7' },
