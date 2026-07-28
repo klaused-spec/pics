@@ -38,6 +38,22 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// Interceptor de resposta: 401 = sessão expirada → limpa token e redireciona para login
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      const isLoginEndpoint = error.config?.url?.includes('/auth/login')
+      if (!isLoginEndpoint) {
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('userEmail')
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
 // ===== AUTENTICAÇÃO =====
 export const register = (email, password) => 
   api.post('/auth/register', { email, password })
