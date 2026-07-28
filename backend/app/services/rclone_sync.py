@@ -10,6 +10,7 @@ lista de exclusão para o rclone. Considera nomes de arquivo únicos na bibliote
 inteira (independente da pasta), conforme decisão do projeto.
 """
 import os
+import re
 import json
 import logging
 import tempfile
@@ -40,9 +41,12 @@ def _log(line: str):
 
 
 def _get_existing_filenames() -> set[str]:
-    """Retorna o conjunto de nomes de arquivo já presentes na biblioteca.
+    """Retorna nomes de arquivo já presentes na biblioteca OU na lixeira.
 
-    Usa o banco (Media.filename) ignorando registros marcados como duplicata.
+    Inclui:
+    - Banco de dados (Media.filename, excluindo duplicatas)
+    - Arquivos em qualquer pasta .trash dentro de organized_dir e library_folders
+
     A comparação é case-insensitive (nomes normalizados para minúsculas), já que
     o rclone no Windows/OneDrive não diferencia maiúsculas de minúsculas.
     """
@@ -53,9 +57,35 @@ def _get_existing_filenames() -> set[str]:
             .filter(Media.is_duplicate == False)  # noqa: E712
             .all()
         )
-        return {r[0].lower() for r in rows if r[0]}
+        names = {r[0].lower() for r in rows if r[0]}
     finally:
         db.close()
+
+    # Adiciona arquivos que estão na lixeira (não devem ser re-baixados)
+    trash_dirs = []
+    if settings.organized_dir:
+        trash_dirs.append(os.path.join(settings.organized_dir, ".trash"))
+    for folder in (settings.library_folders or []):
+        trash_dirs.append(os.path.join(folder, ".trash"))
+
+    for trash_dir in trash_dirs:
+        if not os.path.isdir(trash_dir):
+            continue
+        try:
+            for entry in os.scandir(trash_dir):
+                if entry.is_file():
+                    # Remove sufixo de deduplicação (_1, _2, ...) para casar o
+                    # nome original do OneDrive (ex: foto_1.jpg -> foto.jpg)
+                    stem, ext = os.path.splitext(entry.name.lower())
+                    names.add(entry.name.lower())
+                    # Também adiciona o nome sem o sufixo numérico (_N)
+                    base = re.sub(r'_\d+$', '', stem)
+                    if base != stem:
+                        names.add(base + ext)
+        except OSError:
+            pass
+
+    return names
 
 
 def _write_exclude_file(filenames: set[str]) -> str | None:
@@ -186,7 +216,7 @@ def run_rclone_download(on_progress=None) -> dict:
 
     existing = _get_existing_filenames()
     exclude_file = _write_exclude_file(existing)
-    _log(f"{len(existing)} nomes já existentes serão excluídos do download.")
+    _log(f"{len(existing)} nomes excluídos do download (biblioteca + lixeira).")
 
     folders_done = 0
     errors = 0
