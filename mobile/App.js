@@ -1677,7 +1677,10 @@ function AppInner() {
         }
       }
     } catch (error) {
-      if (error.code === 'PERMISSION') {
+      if (error.status === 404 || error.message?.includes('404')) {
+        // Arquivo não existe mais no servidor — remove da lista local silenciosamente
+        setItems((cur) => cur.filter((it) => it.id !== item.id))
+      } else if (error.code === 'PERMISSION') {
         Alert.alert('Galeria', 'Preciso de permissão de acesso às fotos para baixar e salvar na pasta Pics.')
       } else {
         Alert.alert('Arquivo full', error.message)
