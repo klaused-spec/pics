@@ -598,7 +598,7 @@ function AppInner() {
   // Espelho de `items` sempre atualizado, para evitar closures obsoletas
   // (ex.: sync ao retomar do background usava o `items` inicial vazio e zerava tudo).
   const itemsRef = useRef([])
-  // Espelho do token — lido em funções assíncronas para evitar closure stale.
+  // Espelho do token — sempre atualizado para evitar closure stale em funções assíncronas.
   const tokenRef = useRef('')
   const [syncToken, setSyncToken] = useState(null)
   const [syncing, setSyncing] = useState(false)
@@ -959,7 +959,7 @@ function AppInner() {
       { text: 'Excluir', style: 'destructive', onPress: async () => {
         try {
           const url = apiUrl(baseUrl, `/albums/${albumId}`)
-          const response = await fetchWithTimeout(url, { method: 'DELETE', headers: authHeaders(tokenRef.current) })
+          const response = await fetchWithTimeout(url, { method: 'DELETE', headers: authHeaders(token) })
           if (!response.ok && response.status !== 204) throw new Error(`Falha ao excluir (${response.status})`)
           if (openAlbumId === albumId) setOpenAlbumId(null)
           await loadAlbums()
@@ -995,31 +995,33 @@ function AppInner() {
     const base = normalizeBaseUrl(baseUrl)
     const currentToken = tokenRef.current
     const moved = []
-    let failed = 0
+    const errors = []
     for (const id of ids) {
       try {
-        const res = await fetch(`${base}/api/media/${id}`, {
+        const res = await fetchWithTimeout(`${base}/api/media/${id}`, {
           method: 'DELETE',
           headers: authHeaders(currentToken),
-        })
+        }, 15000)
         if (res.ok) {
           moved.push(id)
         } else if (res.status === 401 || res.status === 403) {
           Alert.alert('Sessão expirada', 'Faça login novamente para mover itens para a lixeira.')
           return
         } else {
-          failed++
+          let detail = `HTTP ${res.status}`
+          try { const j = await res.json(); detail = j.detail || detail } catch (_) {}
+          errors.push(detail)
         }
-      } catch (_) {
-        failed++
+      } catch (e) {
+        errors.push(e?.message || 'Erro de rede')
       }
     }
     // Remove da lista local apenas os que foram movidos com sucesso
     if (moved.length > 0) {
       setItems((cur) => cur.filter((it) => !moved.includes(it.id)))
     }
-    if (failed > 0) {
-      Alert.alert('Lixeira', `${moved.length} movido(s). ${failed} falhou(aram).`)
+    if (errors.length > 0) {
+      Alert.alert('Lixeira', `${moved.length} movido(s). ${errors.length} falhou: ${errors[0]}`)
     } else if (moved.length > 0) {
       Alert.alert('Lixeira', `${moved.length} item(s) movido(s) para a lixeira.`)
     }
