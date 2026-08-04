@@ -248,7 +248,8 @@ async function loadItemCache() {
         }
         const parts = await Promise.all(reads)
         const all = parts.flatMap((p) => JSON.parse(p))
-        if (all.length > 0) return all
+        // Limpa thumbnail_failed do cache persistido para que thumbs com falha sejam retentados
+        if (all.length > 0) return all.map((it) => it.thumbnail_failed ? { ...it, thumbnail_failed: false } : it)
       }
     }
   } catch (_) {}
@@ -2121,7 +2122,10 @@ function AppInner() {
   // e um cacheKey estável (imune à troca de token) — cacheada em disco.
   function thumbSource(item) {
     if (item.local_thumbnail_uri) return { uri: item.local_thumbnail_uri }
-    return { uri: item.thumbnail_url, headers: authHeaders(token), cacheKey: `thumb-${item.id}-300` }
+    // cacheKey inclui sha256_hash para invalidar o cache do expo-image quando o arquivo muda.
+    // Para itens novos sem hash ainda, usa updated_at como fallback para evitar cachear falhas.
+    const cacheVersion = item.sha256_hash || item.updated_at || item.id
+    return { uri: item.thumbnail_url, headers: authHeaders(token), cacheKey: `thumb-${item.id}-${cacheVersion}` }
   }
 
   function renderTile(item) {
