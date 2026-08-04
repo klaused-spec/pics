@@ -11,6 +11,7 @@ import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
 import { Unzip, UnzipInflate } from 'fflate'
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useWindowDimensions } from 'react-native'
 import {
   ActivityIndicator,
   Alert,
@@ -554,7 +555,34 @@ async function saveItemToGalleryFile(tempUri, item) {
   return { asset, uri: localUri }
 }
 
-function SlideVideo({ uri, onEnded, preloadUri }) {
+/**
+ * Calcula transform + dimensões para girar mídia com orientação oposta à tela.
+ * Retorna { needsRotation, videoStyle, backdropStyle } prontos para usar.
+ */
+function useSlideLayout(mediaWidth, mediaHeight) {
+  const { width: sw, height: sh } = useWindowDimensions()
+  const screenLandscape = sw > sh
+  const mediaLandscape = !mediaWidth || !mediaHeight ? true : mediaWidth >= mediaHeight
+  const needsRotation = screenLandscape !== mediaLandscape
+
+  let videoStyle = { width: sw, height: sh }
+  if (needsRotation) {
+    // Após rotate(90deg), largura e altura trocam: calcula escala para caber
+    const scale = Math.min(sw / (mediaHeight || sh), sh / (mediaWidth || sw))
+    videoStyle = {
+      width: mediaWidth || sh,
+      height: mediaHeight || sw,
+      transform: [{ rotate: '90deg' }, { scale }],
+    }
+  }
+
+  // Backdrop: sempre cobre a tela inteira com a imagem/frame esticado
+  const backdropStyle = { position: 'absolute', top: 0, left: 0, width: sw, height: sh }
+
+  return { needsRotation, videoStyle, backdropStyle, sw, sh }
+}
+
+function SlideVideo({ uri, onEnded, preloadUri, mediaWidth, mediaHeight, thumbUri }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false
     p.play()
@@ -575,14 +603,64 @@ function SlideVideo({ uri, onEnded, preloadUri }) {
       // ciclo de vida internamente e release() trava o próximo player.
     }
   }, [player])
+
+  const { videoStyle, backdropStyle } = useSlideLayout(mediaWidth, mediaHeight)
+
   return (
-    <VideoView
-      player={player}
-      style={styles.slideMedia}
-      contentFit="contain"
-      nativeControls={false}
-      surfaceType="textureView"
-    />
+    <View style={{ flex: 1, backgroundColor: '#000' }}>
+      {/* Backdrop desfocado para cobrir faixas pretas */}
+      {thumbUri && (
+        <ExpoImage
+          source={{ uri: thumbUri }}
+          style={backdropStyle}
+          contentFit="cover"
+          blurRadius={20}
+          tintColor={undefined}
+        />
+      )}
+      {/* Overlay escuro sobre o backdrop */}
+      <View style={[backdropStyle, { backgroundColor: 'rgba(0,0,0,0.45)' }]} />
+      {/* Vídeo em foreground, girado se necessário */}
+      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
+        <VideoView
+          player={player}
+          style={videoStyle}
+          contentFit="contain"
+          nativeControls={false}
+          surfaceType="textureView"
+        />
+      </View>
+    </View>
+  )
+}
+
+function SlidePhoto({ uri, mediaWidth, mediaHeight, opacity, next }) {
+  const { videoStyle, backdropStyle } = useSlideLayout(mediaWidth, mediaHeight)
+
+  return (
+    <Animated.View style={{ flex: 1, backgroundColor: '#000', opacity }}>
+      {/* Backdrop desfocado */}
+      <ExpoImage
+        source={{ uri }}
+        style={backdropStyle}
+        contentFit="cover"
+        blurRadius={20}
+      />
+      {/* Overlay escuro */}
+      <View style={[backdropStyle, { backgroundColor: 'rgba(0,0,0,0.45)' }]} />
+      {/* Pré-carrega próxima foto fora do fluxo */}
+      {next && next.media_type !== 'video' && (
+        <Image source={{ uri: next.localUri }} style={{ width: 1, height: 1, position: 'absolute', opacity: 0 }} />
+      )}
+      {/* Foto em foreground, girada se necessário */}
+      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
+        <Image
+          source={{ uri }}
+          style={videoStyle}
+          resizeMode="contain"
+        />
+      </View>
+    </Animated.View>
   )
 }
 
@@ -2969,21 +3047,26 @@ function AppInner() {
               <>
                 {/* Vídeo atual */}
                 {current.media_type === 'video' && (
-                  <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} preloadUri={next?.localUri} />
+                  <SlideVideo
+                    key={current.id}
+                    uri={current.localUri}
+                    onEnded={() => advanceSlide(1)}
+                    preloadUri={next?.localUri}
+                    mediaWidth={current.width}
+                    mediaHeight={current.height}
+                    thumbUri={current.thumbUri}
+                  />
                 )}
                 {/* Foto atual */}
                 {current.media_type !== 'video' && (
-                  <Animated.View style={{ flex: 1, width: '100%', opacity: slideOpacity, backgroundColor: '#000' }}>
-                    {/* Pré-carrega próxima foto fora do fluxo */}
-                    {next && next.media_type !== 'video' && (
-                      <Image source={{ uri: next.localUri }} style={{ width: 1, height: 1, position: 'absolute', opacity: 0 }} />
-                    )}
-                    <Image
-                      source={{ uri: current.localUri }}
-                      style={{ flex: 1, width: '100%' }}
-                      resizeMode="contain"
-                    />
-                  </Animated.View>
+                  <SlidePhoto
+                    key={current.id}
+                    uri={current.localUri}
+                    mediaWidth={current.width}
+                    mediaHeight={current.height}
+                    opacity={slideOpacity}
+                    next={next}
+                  />
                 )}
                 <Pressable style={[styles.slideClose, { left: 20, right: undefined }]} onPress={() => advanceSlide(-1)}>
                   <Text style={styles.slideCloseText}>‹</Text>
