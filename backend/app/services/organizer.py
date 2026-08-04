@@ -245,7 +245,7 @@ def get_video_metadata(filepath: str) -> dict:
         result = subprocess.run(
             [ffprobe, "-v", "quiet", "-print_format", "json",
              "-show_format", "-show_streams", filepath],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
         data = json.loads(result.stdout)
         duration = None

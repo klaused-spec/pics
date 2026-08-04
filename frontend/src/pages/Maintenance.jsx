@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X, Cloud } from 'lucide-react'
-import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp, updateAndRestart } from '../api'
+import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp, updateAndRestart, backfillDimensions } from '../api'
 
 export default function Maintenance() {
   const [audit, setAudit] = useState(null)
@@ -83,6 +83,10 @@ export default function Maintenance() {
         await startThumbnailWarmup()
         setMessage({ type: 'success', text: 'Cache de thumbnails iniciado em segundo plano.' })
         loadJobs()
+      }
+      else if (action === 'backfill_dimensions') {
+        const res = await backfillDimensions()
+        setMessage({ type: 'success', text: res.data.message })
       }
       else if (action === 'clear_jobs') {
         await deleteAllJobs()
@@ -223,6 +227,13 @@ export default function Maintenance() {
       label: 'Cache de Thumbnails',
       description: 'Gera TODAS as thumbnails em paralelo (rápido)',
       name: 'Thumbnail cache warmup',
+    },
+    {
+      action: 'backfill_dimensions',
+      icon: <Activity className="w-4 h-4" />,
+      label: 'Corrigir Dimensões de Vídeo',
+      description: 'Preenche largura/altura/duração de vídeos com dados faltando (necessário para badge 8K/4K/FHD/HD)',
+      name: 'Backfill video dimensions',
     },
     {
       action: 'resume_interrupted',

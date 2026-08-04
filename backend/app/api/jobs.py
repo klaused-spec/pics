@@ -266,6 +266,122 @@ def clear_jobs_history(
     }
 
 
+@router.post("/backfill-dimensions")
+def backfill_dimensions(
+    current_user: dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    """Preenche width/height/duration de vídeos que têm esses campos NULL no banco."""
+    from app.models.models import Media
+
+    existing = db.query(ProcessingJob).filter(
+        ProcessingJob.job_type == "backfill_dimensions",
+        ProcessingJob.status.in_(["pending", "running"]),
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Backfill de dimensões já está em execução.")
+
+    total = db.query(Media).filter(
+        Media.media_type == "video",
+        (Media.width == None) | (Media.height == None),
+    ).count()
+
+    if total == 0:
+        return {"message": "Nenhum vídeo com dimensões faltando.", "updated": 0}
+
+    background_tasks.add_task(_run_backfill_dimensions)
+    return {"message": f"Backfill iniciado para {total} vídeo(s).", "total": total}
+
+
+def _run_backfill_dimensions():
+    """Worker: percorre vídeos sem dimensões e preenche via ffprobe."""
+    import os
+    from app.core.database import SessionLocal
+    from app.models.models import Media
+    from app.services.organizer import get_video_metadata
+
+    db = SessionLocal()
+    try:
+        job = ProcessingJob(
+            job_type="backfill_dimensions",
+            status="running",
+            started_at=datetime.datetime.utcnow(),
+        )
+        db.add(job)
+        db.commit()
+
+        ids = [
+            r.id for r in db.query(Media.id).filter(
+                Media.media_type == "video",
+                (Media.width == None) | (Media.height == None),
+            ).all()
+        ]
+
+        job.total_items = len(ids)
+        db.commit()
+
+        # Também corrige needs_transcode para vídeos HEVC já existentes no banco
+        WEB_CODECS = {"h264", "vp8", "vp9", "av1"}
+        hevc_fixed = 0
+        for m in db.query(Media).filter(
+            Media.media_type == "video",
+            Media.video_codec == "hevc",
+            Media.needs_transcode == False,
+        ).all():
+            m.needs_transcode = True
+            hevc_fixed += 1
+        if hevc_fixed:
+            db.commit()
+            logger.info(f"Backfill: {hevc_fixed} vídeo(s) HEVC marcados para transcodificação")
+
+        updated = 0
+        for i, media_id in enumerate(ids):
+            m = db.query(Media).filter(Media.id == media_id).first()
+            if not m:
+                continue
+            filepath = m.organized_path or m.original_path
+            if not filepath or not os.path.exists(filepath):
+                continue
+            try:
+                meta = get_video_metadata(filepath)
+                w, h = meta.get("width"), meta.get("height")
+                dur = meta.get("duration")
+                codec = meta.get("codec")
+                if w or h:
+                    m.width = w
+                    m.height = h
+                if dur:
+                    m.duration_seconds = dur
+                if codec:
+                    m.video_codec = codec
+                    m.needs_transcode = codec not in WEB_CODECS
+                updated += 1
+            except Exception:
+                pass
+
+            job.processed_items = i + 1
+            if (i + 1) % 50 == 0 or (i + 1) == len(ids):
+                db.commit()
+
+        job.status = "completed"
+        job.completed_at = datetime.datetime.utcnow()
+        job.error_message = f"{updated} vídeo(s) atualizados de {len(ids)} processados."
+        db.commit()
+        logger.info(f"Backfill de dimensões concluído: {updated}/{len(ids)}")
+    except Exception as e:
+        logger.exception(f"Erro no backfill de dimensões: {e}")
+        try:
+            job.status = "failed"
+            job.completed_at = datetime.datetime.utcnow()
+            job.error_message = str(e)
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
 @router.post("/reboot")
 def reboot_server(
     current_user: dict = Depends(get_current_user),

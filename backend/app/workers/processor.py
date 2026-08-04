@@ -154,7 +154,8 @@ def _preprocess_library_file(filepath: str) -> dict:
             width, height = meta.get("width"), meta.get("height")
             duration = meta.get("duration")
             video_codec = meta.get("codec")
-            web_codecs = {"h264", "hevc", "vp8", "vp9", "av1"}
+            # hevc excluido: Chrome/Windows nao suporta nativamente
+            web_codecs = {"h264", "vp8", "vp9", "av1"}
             if video_codec and video_codec not in web_codecs:
                 needs_transcode = True
 
@@ -740,8 +741,8 @@ def _run_sync_locked() -> dict:
                             width, height = meta.get("width"), meta.get("height")
                             duration = meta.get("duration")
                             video_codec = meta.get("codec")
-                            # Codecs suportados nativamente pelos browsers
-                            web_codecs = {"h264", "hevc", "vp8", "vp9", "av1"}
+                            # hevc excluido: Chrome/Windows nao suporta nativamente
+                            web_codecs = {"h264", "vp8", "vp9", "av1"}
                             if video_codec and video_codec not in web_codecs:
                                 needs_transcode = True
 

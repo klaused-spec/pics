@@ -114,6 +114,7 @@ export const startFaceDetection = () => api.post('/jobs/face-detect', null, { pa
 export const startFullPipeline = () => api.post('/jobs/full-pipeline')
 export const startSync = () => api.post('/jobs/sync')
 export const startPurgeMissing = () => api.post('/jobs/purge-missing')
+export const backfillDimensions = () => api.post('/jobs/backfill-dimensions')
 export const startRcloneDownload = () => api.post('/jobs/rclone-download')
 export const getRcloneLog = () => api.get('/jobs/rclone-log')
 export const databaseAudit = () => api.get('/jobs/audit')

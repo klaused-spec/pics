@@ -1214,7 +1214,8 @@ function AppInner() {
             await FileSystem.deleteAsync(localThumb, { idempotent: true })
           }
           const localThumbnailUri = !thumbChanged && previous?.local_thumbnail_uri ? previous.local_thumbnail_uri : null
-          const thumbnailFailed = !thumbChanged && previous?.thumbnail_failed ? true : false
+          // Sempre reseta thumbnail_failed no sync para retentar thumbs que falharam antes
+          const thumbnailFailed = false
           itemMap.set(item.id, { ...item, local_thumbnail_uri: localThumbnailUri, thumbnail_failed: thumbnailFailed })
         }
 
@@ -1494,6 +1495,8 @@ function AppInner() {
   }
 
   function markThumbnailFailed(id) {
+    // Marca em memória apenas — não persiste para o disco.
+    // Assim, na próxima sincronização ou reinicialização do app, o thumb será tentado novamente.
     setItems((currentItems) => {
       let changed = false
       const nextItems = currentItems.map((item) => {
@@ -1502,7 +1505,6 @@ function AppInner() {
         return { ...item, thumbnail_failed: true }
       })
       if (!changed) return currentItems
-      persistItemCache(nextItems).catch(() => {})
       return nextItems
     })
   }

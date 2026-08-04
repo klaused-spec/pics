@@ -12,8 +12,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Codecs que o browser toca nativamente
-WEB_COMPATIBLE_CODECS = {"h264", "hevc", "vp8", "vp9", "av1"}
+# Codecs que o browser toca nativamente (hevc excluido: Chrome/Windows nao suporta)
+WEB_COMPATIBLE_CODECS = {"h264", "vp8", "vp9", "av1"}
 
 # Extensões que o browser NÃO toca nativamente
 NON_WEB_EXTENSIONS = {".mpg", ".mpeg", ".avi", ".wmv", ".mkv", ".3gp", ".flv", ".ogv", ".webm", ".mov", ".mts"}
@@ -25,7 +25,7 @@ def _get_duration(filepath: str) -> float:
         result = subprocess.run(
             [settings.ffprobe_path, "-v", "quiet", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
         return float(result.stdout.strip())
     except (ValueError, subprocess.TimeoutExpired, FileNotFoundError):
@@ -131,14 +131,14 @@ def transcode_video(original_path: str) -> str:
         try:
             probe = subprocess.run(
                 [settings.ffmpeg_path, "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
             )
             if "h264_qsv" in probe.stdout:
                 # Testa se o hardware QSV realmente inicializa
                 qsv_test = subprocess.run(
                     [settings.ffmpeg_path, "-hide_banner", "-init_hw_device", "qsv=hw", "-f", "lavfi",
                      "-i", "nullsrc", "-frames:v", "1", "-c:v", "h264_qsv", "-f", "null", "-"],
-                    capture_output=True, text=True, timeout=10
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
                 )
                 use_qsv = qsv_test.returncode == 0
         except Exception:
@@ -152,6 +152,8 @@ def transcode_video(original_path: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         # Ler progresso do stdout
