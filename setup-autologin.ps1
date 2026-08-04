@@ -19,7 +19,7 @@ $taskName = "PICS_Startup"
 # Remove task anterior se existir
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
-$action  = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$startBat`""
+$action  = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$startBat`" prod"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $username
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 $principal = New-ScheduledTaskPrincipal -UserId $username -LogonType Interactive -RunLevel Highest

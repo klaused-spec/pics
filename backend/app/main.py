@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
 
     # Marca jobs "running" órfãos como "interrupted" (crash/restart anterior)
     from app.core.database import SessionLocal
-    from app.models import ProcessingJob
+    from app.models import ProcessingJob, AlbumTranscodeJob
     db = SessionLocal()
     try:
         orphan_jobs = db.query(ProcessingJob).filter(ProcessingJob.status == "running").all()
@@ -53,6 +53,34 @@ async def lifespan(app: FastAPI):
         if orphan_jobs:
             db.commit()
             logger.info(f"Marcados {len(orphan_jobs)} jobs órfãos como interrupted")
+
+        # Reseta AlbumTranscodeJobs "running" para "pending" e retoma os "pending" orphãos
+        orphan_transcode = db.query(AlbumTranscodeJob).filter(AlbumTranscodeJob.status == "running").all()
+        if orphan_transcode:
+            for j in orphan_transcode:
+                j.status = "pending"
+            db.commit()
+            logger.info(f"Resetados {len(orphan_transcode)} AlbumTranscodeJobs orphãos para pending")
+
+        # Retoma todos os jobs pending (incluindo os que ficaram após restart)
+        from sqlalchemy import distinct
+        pending_album_ids = [
+            row[0]
+            for row in db.query(distinct(AlbumTranscodeJob.album_id))
+            .filter(AlbumTranscodeJob.status == "pending")
+            .all()
+        ]
+        if pending_album_ids:
+            from app.services.transcode_service import start_album_transcode
+            for album_id in pending_album_ids:
+                pending_ids = [
+                    j.id for j in db.query(AlbumTranscodeJob)
+                    .filter_by(album_id=album_id, status="pending")
+                    .all()
+                ]
+                if pending_ids:
+                    start_album_transcode(album_id, pending_ids)
+            logger.info(f"Retomados jobs pending para albums: {pending_album_ids}")
     finally:
         db.close()
 

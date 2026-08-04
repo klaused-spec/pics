@@ -279,8 +279,8 @@ def start_transcode(
 
     jobs = ensure_transcode_jobs(db, album_id, all_ids)
 
-    # Dispara apenas os que ainda não estão done
-    pending_ids = [j.id for j in jobs if j.status in ("pending", "failed")]
+    # Dispara apenas os que ainda não estão done ("running" pode ser órfão de restart)
+    pending_ids = [j.id for j in jobs if j.status in ("pending", "failed", "running")]
     if pending_ids:
         start_album_transcode(album_id, pending_ids)
 

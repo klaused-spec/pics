@@ -2125,7 +2125,7 @@ function AppInner() {
     // cacheKey inclui sha256_hash para invalidar o cache do expo-image quando o arquivo muda.
     // Para itens novos sem hash ainda, usa updated_at como fallback para evitar cachear falhas.
     const cacheVersion = item.sha256_hash || item.updated_at || item.id
-    return { uri: item.thumbnail_url, headers: authHeaders(token), cacheKey: `thumb-${item.id}-${cacheVersion}` }
+    return { uri: item.thumbnail_url, headers: authHeaders(token), cacheKey: `thumb-${item.id}-${cacheVersion}-v2` }
   }
 
   function renderTile(item) {

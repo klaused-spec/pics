@@ -146,6 +146,10 @@ def _optimize_job(job_id: int) -> None:
         job = db.query(AlbumTranscodeJob).filter_by(id=job_id).first()
         if not job or job.status == "done":
             return
+        # Se ainda estiver "running" de uma sessão anterior, trata como pendente
+        if job.status == "running":
+            job.status = "pending"
+            db.commit()
 
         media = db.query(Media).filter_by(id=job.media_id).first()
         if not media:
@@ -235,16 +239,16 @@ def _qsv_available() -> bool:
 
 def _optimize_video(src: str, dst: str) -> None:
     """Transcodifica vídeo para H.264/AAC com faststart. Usa Intel QSV se disponivel."""
-    scale_filter = "scale='trunc(min(1280,iw)/2)*2':'trunc(ow/a/2)*2'"
+    scale_filter = "scale='trunc(min(960,iw)/2)*2':'trunc(ow/a/2)*2'"
     if _qsv_available():
         cmd = [
             settings.ffmpeg_path, "-y",
             "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
             "-i", src,
-            "-vf", f"scale_qsv=w='trunc(min(1280,iw)/2)*2':h=-1",
+            "-vf", f"scale_qsv=w='trunc(min(960,iw)/2)*2':h=-1",
             "-c:v", "h264_qsv",
-            "-global_quality", "25",
-            "-c:a", "aac", "-b:a", "128k",
+            "-global_quality", "32",
+            "-c:a", "aac", "-b:a", "96k",
             "-movflags", "+faststart",
             dst,
         ]
@@ -259,10 +263,10 @@ def _optimize_video(src: str, dst: str) -> None:
     cmd = [
         settings.ffmpeg_path, "-y",
         "-i", src,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "28",
         "-threads", cpu_threads,
         "-vf", scale_filter,
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart",
         dst,
     ]
