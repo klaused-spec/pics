@@ -328,6 +328,11 @@ const MemoTile = memo(function MemoTile({
           <Text style={styles.videoBadgeText}>▶ {formatDuration(item.duration_seconds) || 'Vídeo'}</Text>
         </View>
       )}
+      {item.media_type === 'video' && (() => {
+        const long = Math.max(item.width || 0, item.height || 0)
+        const label = long >= 7680 ? '8K' : long >= 3840 ? '4K' : long >= 1920 ? 'FHD' : long >= 1280 ? 'HD' : null
+        return label ? <Text style={styles.resBadge}>{label}</Text> : null
+      })()}
       {item.is_transcoded && (
         <View style={styles.hdBadge}><Text style={styles.hdBadgeText}>HD</Text></View>
       )}
@@ -3049,6 +3054,7 @@ const styles = StyleSheet.create({
   offlineBadge: { position: 'absolute', left: 6, top: 6, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: '#16a34a', fontSize: 9, fontWeight: '800' },
   videoBadge: { position: 'absolute', right: 6, bottom: 6, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: 'rgba(15,23,42,0.82)' },
   videoBadgeText: { color: '#ffffff', fontSize: 10, fontWeight: '800' },
+  resBadge: { position: 'absolute', left: 6, bottom: 6, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden', color: '#ffffff', backgroundColor: 'rgba(15,23,42,0.75)', fontSize: 9, fontWeight: '800' },
 
   // Empty
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, paddingHorizontal: 32 },

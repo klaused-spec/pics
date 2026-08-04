@@ -104,9 +104,9 @@ def transcode_video(original_path: str) -> str:
     try:
         # Usar -progress pipe:1 para ler progresso
         # Tenta usar Intel Quick Sync (h264_qsv) se disponivel; fallback para libx264 (CPU)
+        # Nota: usa decodificação por software + codificação QSV para evitar falhas de hwaccel
         qsv_cmd = [
             settings.ffmpeg_path,
-            "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
             "-i", original_path,
             "-c:v", "h264_qsv",
             "-global_quality", "25",   # QSV usa global_quality (similar ao CRF)
@@ -126,13 +126,21 @@ def transcode_video(original_path: str) -> str:
             "-y", output_path,
         ]
 
-        # Detecta se QSV está disponível
+        # Detecta se QSV está disponível testando init real do hardware
+        use_qsv = False
         try:
             probe = subprocess.run(
                 [settings.ffmpeg_path, "-hide_banner", "-encoders"],
                 capture_output=True, text=True, timeout=5
             )
-            use_qsv = "h264_qsv" in probe.stdout
+            if "h264_qsv" in probe.stdout:
+                # Testa se o hardware QSV realmente inicializa
+                qsv_test = subprocess.run(
+                    [settings.ffmpeg_path, "-hide_banner", "-init_hw_device", "qsv=hw", "-f", "lavfi",
+                     "-i", "nullsrc", "-frames:v", "1", "-c:v", "h264_qsv", "-f", "null", "-"],
+                    capture_output=True, text=True, timeout=10
+                )
+                use_qsv = qsv_test.returncode == 0
         except Exception:
             use_qsv = False
 

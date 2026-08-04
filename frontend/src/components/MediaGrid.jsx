@@ -171,6 +171,18 @@ function MediaGrid({ items, onSelect, selected, onSelectMultiple, thumbSize = 'm
             </div>
           )}
 
+          {/* Badge resolução de vídeo (8K/4K/FHD/HD) */}
+          {item.media_type === 'video' && (() => {
+            const w = item.width, h = item.height
+            const long = Math.max(w || 0, h || 0)
+            const label = long >= 7680 ? '8K' : long >= 3840 ? '4K' : long >= 1920 ? 'FHD' : long >= 1280 ? 'HD' : null
+            return label ? (
+              <div className="absolute bottom-2 left-2 bg-black/70 rounded px-1.5 py-0.5">
+                <p className="text-xs text-white font-bold">{label}</p>
+              </div>
+            ) : null
+          })()}
+
           {/* Badge HD (otimizado) */}
           {item.is_transcoded && (
             <div className="absolute bottom-2 right-2 bg-blue-600/90 rounded px-1.5 py-0.5">
