@@ -8,6 +8,11 @@
         "buildType": "apk"
       }
     },
+    "local": {
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "android": {
         "buildType": "app-bundle"

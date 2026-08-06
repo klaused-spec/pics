@@ -237,7 +237,7 @@ def get_image_dimensions(filepath: str) -> tuple[Optional[int], Optional[int]]:
 
 
 def get_video_metadata(filepath: str) -> dict:
-    """Extrai metadados de vídeo usando ffprobe (duração, dimensões, codec)."""
+    """Extrai metadados de vídeo usando ffprobe (duração, dimensões, codec, rotação)."""
     import subprocess, json
     try:
         from app.core.config import settings as _settings
@@ -251,6 +251,7 @@ def get_video_metadata(filepath: str) -> dict:
         duration = None
         width, height = None, None
         codec = None
+        rotation = 0
 
         if "format" in data and "duration" in data["format"]:
             duration = float(data["format"]["duration"])
@@ -262,12 +263,69 @@ def get_video_metadata(filepath: str) -> dict:
                 codec = stream.get("codec_name")
                 if not duration and "duration" in stream:
                     duration = float(stream["duration"])
+                # Rotação: tag legada ou side_data Display Matrix
+                rotate_tag = stream.get("tags", {}).get("rotate")
+                if rotate_tag is not None:
+                    rotation = int(rotate_tag) % 360
+                else:
+                    for sd in stream.get("side_data_list", []):
+                        if sd.get("side_data_type") == "Display Matrix":
+                            raw = int(sd.get("rotation", 0))
+                            rotation = raw % 360
+                            break
                 break
 
-        return {"duration": duration, "width": width, "height": height, "codec": codec}
+        return {"duration": duration, "width": width, "height": height, "codec": codec, "rotation": rotation}
     except Exception as e:
         logger.debug(f"Erro ao ler metadados de vídeo {filepath}: {e}")
-        return {"duration": None, "width": None, "height": None, "codec": None}
+        return {"duration": None, "width": None, "height": None, "codec": None, "rotation": 0}
+
+
+def get_image_orientation(filepath: str) -> int:
+    """Lê a tag EXIF Orientation de uma foto JPEG/HEIC e converte para graus (0/90/180/270).
+    Retorna 0 se não houver tag ou arquivo não suportado.
+    """
+    import struct
+    # Mapeamento EXIF Orientation -> graus de rotação para exibição correta
+    # 1=normal(0), 3=180, 6=90CW(portrait), 8=270CW(portrait invertido)
+    EXIF_TO_DEGREES = {1: 0, 2: 0, 3: 180, 4: 0, 5: 90, 6: 90, 7: 270, 8: 270}
+    try:
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext not in ('.jpg', '.jpeg', '.heic', '.heif', '.tiff', '.tif'):
+            return 0
+        with open(filepath, 'rb') as f:
+            header = f.read(65536)
+        if header[:2] != b'\xff\xd8':
+            return 0
+        i = 2
+        while i < len(header) - 4:
+            if header[i] != 0xff:
+                break
+            marker = header[i + 1]
+            seg_len = struct.unpack('>H', header[i + 2:i + 4])[0]
+            seg = header[i + 4:i + 2 + seg_len]
+            if marker == 0xe1 and seg[:4] == b'Exif':
+                tiff = seg[6:]
+                if len(tiff) < 8:
+                    break
+                endian = '>' if tiff[:2] == b'MM' else '<'
+                ifd_off = struct.unpack(endian + 'I', tiff[4:8])[0]
+                if ifd_off + 2 > len(tiff):
+                    break
+                n_entries = struct.unpack(endian + 'H', tiff[ifd_off:ifd_off + 2])[0]
+                for e in range(n_entries):
+                    entry_off = ifd_off + 2 + e * 12
+                    if entry_off + 12 > len(tiff):
+                        break
+                    tag = struct.unpack(endian + 'H', tiff[entry_off:entry_off + 2])[0]
+                    if tag == 0x0112:  # Orientation
+                        val = struct.unpack(endian + 'H', tiff[entry_off + 8:entry_off + 10])[0]
+                        return EXIF_TO_DEGREES.get(val, 0)
+                break
+            i += 2 + seg_len
+    except Exception as e:
+        logger.debug(f"Erro ao ler orientação EXIF de {filepath}: {e}")
+    return 0
 
 
 def generate_video_thumbnail(video_path: str, output_path: str) -> bool:

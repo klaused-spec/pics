@@ -64,6 +64,7 @@ class Media(Base):
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
     duration_seconds = Column(Float, nullable=True)  # Para vídeos
+    display_rotation = Column(Integer, nullable=False, default=0)  # 0/90/180/270 — definido manualmente pelo usuário
     video_codec = Column(String, nullable=True)  # Codec do vídeo (h264, mpeg4, wmv3, etc.)
     needs_transcode = Column(Boolean, default=False)  # True se codec incompatível com browser
     camera_make = Column(String, nullable=True)

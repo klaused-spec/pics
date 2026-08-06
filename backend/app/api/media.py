@@ -993,7 +993,30 @@ def _media_sync_item(media: Media, base_url: str, thumbnail_size: int) -> dict:
         "file_url": f"{base_url}/api/media/{media.id}/file",
         "stream_url": f"{base_url}/api/media/{media.id}/stream" if media.media_type == "video" else None,
         "is_transcoded": bool(media.transcoded_path),
+        "display_rotation": media.display_rotation or 0,
     }
+
+
+class RotationBody(BaseModel):
+    rotation: int  # 0, 90, 180 ou 270
+
+
+@router.patch("/{media_id}/rotation")
+def set_media_rotation(
+    media_id: int,
+    body: RotationBody,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Define a rotação de exibição de uma mídia (0/90/180/270)."""
+    if body.rotation not in (0, 90, 180, 270):
+        raise HTTPException(status_code=400, detail="rotation deve ser 0, 90, 180 ou 270")
+    media = db.query(Media).get(media_id)
+    if not media:
+        raise HTTPException(status_code=404, detail="Mídia não encontrada")
+    media.display_rotation = body.rotation
+    db.commit()
+    return {"id": media_id, "display_rotation": body.rotation}
 
 
 @router.get("/{media_id}")
@@ -1550,6 +1573,7 @@ def _media_to_dict(media: Media, include_details: bool = False) -> dict:
         "ai_scene_type": media.ai_scene_type,
         "thumbnail_url": f"/api/media/{media.id}/thumbnail",
         "file_url": f"/api/media/{media.id}/file",
+        "display_rotation": media.display_rotation or 0,
     }
 
     if media.media_type == "video":

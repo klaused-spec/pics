@@ -3,94 +3,17 @@ import { useSearchParams } from 'react-router-dom'
 import { getMedia, searchMedia, getAlbumMedia, getFileUrl, getStreamUrl } from '../api'
 import { ChevronLeft, ChevronRight, X, Pause, Play } from 'lucide-react'
 
-/**
- * Retorna true se a mídia tem orientação oposta à tela.
- */
-function hasLetterboxBars(mediaWidth, mediaHeight) {
-  if (!mediaWidth || !mediaHeight) return false
-  const screenLandscape = window.innerWidth > window.innerHeight
-  const mediaLandscape = mediaWidth >= mediaHeight
-  return screenLandscape !== mediaLandscape
-}
-
-/**
- * Calcula o style CSS para rotacionar um vídeo portrait quando a tela
- * está landscape (e vice-versa), sem alterar o arquivo.
- *
- * Após rotate(90deg), width e height trocam de papel:
- *   - para caber na tela landscape com vídeo portrait:
- *     antes da rotação: width=100vh, height=100vw
- *     o resultado visível será width=100vw, height=100vh
- */
-function getVideoRotationStyle(mediaWidth, mediaHeight) {
-  if (!mediaWidth || !mediaHeight) return {}
-  const screenLandscape = window.innerWidth > window.innerHeight
-  const mediaPortrait = mediaHeight > mediaWidth
-
-  // Tela landscape + vídeo portrait → girar 90°
-  if (screenLandscape && mediaPortrait) {
-    // Escala para que a dimensão maior (height) caiba na largura da tela
-    // e a menor (width) caiba na altura da tela
-    const scaleW = window.innerWidth / mediaHeight
-    const scaleH = window.innerHeight / mediaWidth
-    const scale = Math.min(scaleW, scaleH)
-    return {
-      transform: `rotate(90deg) scale(${scale})`,
-      transformOrigin: 'center center',
-      width: `${mediaWidth}px`,
-      height: `${mediaHeight}px`,
-      maxWidth: 'none',
-      maxHeight: 'none',
-    }
-  }
-
-  // Tela portrait + vídeo landscape → girar 90°
-  if (!screenLandscape && !mediaPortrait) {
-    const scaleW = window.innerHeight / mediaWidth
-    const scaleH = window.innerWidth / mediaHeight
-    const scale = Math.min(scaleW, scaleH)
-    return {
-      transform: `rotate(90deg) scale(${scale})`,
-      transformOrigin: 'center center',
-      width: `${mediaWidth}px`,
-      height: `${mediaHeight}px`,
-      maxWidth: 'none',
-      maxHeight: 'none',
-    }
-  }
-
-  return {}
-}
-
 function Slideshow() {
   const [searchParams] = useSearchParams()
   const [items, setItems] = useState([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [playing, setPlaying] = useState(true)
   const [loading, setLoading] = useState(true)
-  const [backdropSrc, setBackdropSrc] = useState(null)
   const intervalRef = useRef(null)
   const videoRef = useRef(null)
-  const canvasRef = useRef(null)
 
   // Intervalo entre slides (ms)
   const SLIDE_INTERVAL = 5000
-
-  // Atualiza backdrop sempre que o item corrente muda
-  useEffect(() => {
-    if (items.length === 0) return
-    const current = items[currentIndex]
-    if (!hasLetterboxBars(current.width, current.height)) {
-      setBackdropSrc(null)
-      return
-    }
-    if (current.media_type === 'image') {
-      setBackdropSrc(getFileUrl(current.id))
-    } else {
-      // Para vídeo: captura primeiro frame via canvas quando carregar
-      setBackdropSrc(null) // limpa enquanto carrega
-    }
-  }, [currentIndex, items])
 
   useEffect(() => {
     loadItems()
@@ -191,22 +114,6 @@ function Slideshow() {
     if (playing) goNext()
   }
 
-  // Captura o primeiro frame do vídeo e usa como backdrop
-  function handleVideoLoaded() {
-    const current = items[currentIndex]
-    const video = videoRef.current
-    if (!video) return
-    // Atualiza backdrop se necessário
-    if (hasLetterboxBars(current.width, current.height)) {
-      const canvas = document.createElement('canvas')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      setBackdropSrc(canvas.toDataURL('image/jpeg', 0.7))
-    }
-  }
-
   if (loading) {
     return (
       <div className="h-screen w-screen bg-black flex items-center justify-center">
@@ -226,40 +133,24 @@ function Slideshow() {
   const current = items[currentIndex]
 
   return (
-    <div className="h-screen w-screen bg-black relative select-none overflow-hidden">
-      {/* Backdrop desfocado para preencher faixas pretas */}
-      {backdropSrc && (
-        <div
-          className="absolute inset-0"
-          style={{
-            backgroundImage: `url(${backdropSrc})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            filter: 'blur(28px) brightness(0.45)',
-            transform: 'scale(1.08)',
-          }}
-        />
-      )}
-
-      {/* Conteúdo em foreground */}
+    <div className="h-screen w-screen bg-black relative select-none">
+      {/* Conteúdo */}
       <div className="absolute inset-0 flex items-center justify-center">
         {current.media_type === 'image' ? (
           <img
             key={current.id}
             src={getFileUrl(current.id)}
             alt={current.ai_description || ''}
-            className="max-w-full max-h-full object-contain animate-fade-in relative z-10"
+            className="max-w-full max-h-full object-contain animate-fade-in"
           />
         ) : (
           <video
             ref={videoRef}
             key={current.id}
             src={getStreamUrl(current.id)}
-            className="relative z-10"
-            style={getVideoRotationStyle(current.width, current.height)}
+            className="max-w-full max-h-full"
             autoPlay
             onEnded={handleVideoEnd}
-            onLoadedData={handleVideoLoaded}
           />
         )}
       </div>

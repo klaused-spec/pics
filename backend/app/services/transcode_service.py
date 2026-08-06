@@ -72,6 +72,14 @@ def ensure_transcode_jobs(db: Session, album_id: int, media_ids: list[int]) -> l
             .first()
         )
         if existing:
+            # Retentar jobs com falha
+            if existing.status == "failed":
+                media_item = db.query(Media).filter_by(id=media_id).first()
+                media_type = media_item.media_type if media_item else "video"
+                media_filename = media_item.filename if media_item else ""
+                existing.status = "pending"
+                existing.error_message = None
+                existing.output_path = output_path_for(album_id, media_id, media_type, album_name, media_filename)
             jobs.append(existing)
             continue
         media_item = db.query(Media).filter_by(id=media_id).first()
@@ -116,7 +124,9 @@ def get_album_transcode_status(db: Session, album_id: int) -> dict:
     else:
         overall = "partial"
 
-    percent = round(done / total * 100) if total > 0 else 0
+    # Percent baseado em done / (total - failed) para não ficar preso quando há falhas
+    active = total - failed
+    percent = round(done / active * 100) if active > 0 else 100
 
     return {
         "status": overall,
@@ -165,6 +175,14 @@ def _optimize_job(job_id: int) -> None:
             db.commit()
             return
 
+        # Se já existe um transcoded válido para essa mídia, aproveita sem reprocessar
+        if media.transcoded_path and os.path.isfile(media.transcoded_path):
+            job.output_path = media.transcoded_path
+            job.status = "done"
+            db.commit()
+            logger.info(f"[opt] job={job_id} media={job.media_id} aproveitou transcoded existente")
+            return
+
         output = job.output_path
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         if os.path.exists(output):
@@ -176,7 +194,7 @@ def _optimize_job(job_id: int) -> None:
         if media.media_type == "image":
             _optimize_image(filepath, output)
         else:
-            _optimize_video(filepath, output)
+            _optimize_video(filepath, output, rotation=media.display_rotation or 0)
 
         if os.path.isfile(output):
             job.status = "done"
@@ -237,19 +255,43 @@ def _qsv_available() -> bool:
     return _qsv_available_cache
 
 
-def _optimize_video(src: str, dst: str) -> None:
-    """Transcodifica vídeo para H.264/AAC com faststart. Usa Intel QSV se disponivel."""
-    scale_filter = "scale='trunc(min(960,iw)/2)*2':'trunc(ow/a/2)*2'"
+_ROTATION_TO_TRANSPOSE = {
+    90: "transpose=1",   # 90° CW
+    180: "transpose=2,transpose=2",  # 180°
+    270: "transpose=2",  # 90° CCW
+}
+
+
+def _optimize_video(src: str, dst: str, rotation: int = 0) -> None:
+    """Transcodifica vídeo para H.264/AAC com faststart. Usa Intel QSV se disponivel.
+    rotation: graus de display_rotation (0/90/180/270). Aplica transpose fisicamente
+    e zera a tag de rotação no output para evitar dupla rotação no player.
+    """
+    # Desativa autorotate do ffmpeg para controlar rotação manualmente via filtro
+    input_opts = ["-noautorotate"]
+
+    # Monta filtro de vídeo: transpose (se houver rotação) + HDR→SDR + scale
+    hdr_scale = (
+        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+        "zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"
+        "scale='trunc(min(960,iw)/2)*2':'trunc(ow/a/2)*2'"
+    )
+    transpose = _ROTATION_TO_TRANSPOSE.get(rotation, "")
+    scale_filter = f"{transpose},{hdr_scale}" if transpose else hdr_scale
+
+    # Zera tag de rotação no output (já aplicada fisicamente pelo filtro)
+    meta_opts = ["-metadata:s:v:0", "rotate=0"]
+
     if _qsv_available():
         cmd = [
             settings.ffmpeg_path, "-y",
-            "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
-            "-i", src,
-            "-vf", f"scale_qsv=w='trunc(min(960,iw)/2)*2':h=-1",
+            *input_opts, "-i", src,
+            "-vf", scale_filter,
             "-c:v", "h264_qsv",
             "-global_quality", "32",
             "-c:a", "aac", "-b:a", "96k",
             "-movflags", "+faststart",
+            *meta_opts,
             dst,
         ]
         result = subprocess.run(cmd, capture_output=True, timeout=3600)
@@ -257,17 +299,19 @@ def _optimize_video(src: str, dst: str) -> None:
             logger.info(f"[opt] h264_qsv OK: {Path(dst).name}")
             return
         logger.warning(f"[opt] QSV falhou, usando CPU: {result.stderr.decode(errors='replace')[-200:]}")
-    # Fallback CPU — limita threads para não saturar todos os núcleos
+    # Fallback CPU
     import os as _os
     cpu_threads = str(max(1, (_os.cpu_count() or 4) // 2))
     cmd = [
         settings.ffmpeg_path, "-y",
-        "-i", src,
+        *input_opts, "-i", src,
         "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+        "-profile:v", "high", "-pix_fmt", "yuv420p",
         "-threads", cpu_threads,
         "-vf", scale_filter,
         "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart",
+        *meta_opts,
         dst,
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=3600)

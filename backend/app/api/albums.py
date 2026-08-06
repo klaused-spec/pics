@@ -439,4 +439,5 @@ def _media_to_dict(media: Media) -> dict:
         "sha256_hash": media.sha256_hash,
         "ai_description": media.ai_description,
         "thumbnail_url": f"/api/media/{media.id}/thumbnail?size=300",
+        "display_rotation": media.display_rotation or 0,
     }

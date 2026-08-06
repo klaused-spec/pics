@@ -11,7 +11,6 @@ import * as MediaLibrary from 'expo-media-library'
 import { StatusBar } from 'expo-status-bar'
 import { Unzip, UnzipInflate } from 'fflate'
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { useWindowDimensions } from 'react-native'
 import {
   ActivityIndicator,
   Alert,
@@ -24,6 +23,7 @@ import {
   Modal,
   PanResponder,
   Pressable,
+  useWindowDimensions,
   Share,
   StyleSheet,
   Text,
@@ -555,112 +555,35 @@ async function saveItemToGalleryFile(tempUri, item) {
   return { asset, uri: localUri }
 }
 
-/**
- * Calcula transform + dimensões para girar mídia com orientação oposta à tela.
- * Retorna { needsRotation, videoStyle, backdropStyle } prontos para usar.
- */
-function useSlideLayout(mediaWidth, mediaHeight) {
-  const { width: sw, height: sh } = useWindowDimensions()
-  const screenLandscape = sw > sh
-  const mediaLandscape = !mediaWidth || !mediaHeight ? true : mediaWidth >= mediaHeight
-  const needsRotation = screenLandscape !== mediaLandscape
-
-  let videoStyle = { width: sw, height: sh }
-  if (needsRotation) {
-    // Após rotate(90deg), largura e altura trocam: calcula escala para caber
-    const scale = Math.min(sw / (mediaHeight || sh), sh / (mediaWidth || sw))
-    videoStyle = {
-      width: mediaWidth || sh,
-      height: mediaHeight || sw,
-      transform: [{ rotate: '90deg' }, { scale }],
-    }
-  }
-
-  // Backdrop: sempre cobre a tela inteira com a imagem/frame esticado
-  const backdropStyle = { position: 'absolute', top: 0, left: 0, width: sw, height: sh }
-
-  return { needsRotation, videoStyle, backdropStyle, sw, sh }
-}
-
-function SlideVideo({ uri, onEnded, preloadUri, mediaWidth, mediaHeight, thumbUri }) {
-  const player = useVideoPlayer(uri, (p) => {
-    p.loop = false
-    p.play()
-  })
-  // Pré-carrega o próximo vídeo em background para reduzir tempo de espera
-  useVideoPlayer(preloadUri || uri, (p) => { p.pause() })
-  // Usa ref para evitar stale closure e re-registro desnecessário do listener
+function SlideVideo({ uri, onEnded, rotation = 0 }) {
+  const { width, height } = require('react-native').Dimensions.get('window')
   const onEndedRef = useRef(onEnded)
   useEffect(() => { onEndedRef.current = onEnded }, [onEnded])
-  useEffect(() => {
-    // Avança slide quando o vídeo chega ao fim (playToEnd é o evento correto)
-    const sub = player.addListener('playToEnd', () => {
-      onEndedRef.current?.()
-    })
-    return () => {
-      sub?.remove?.()
-      // Não chamar player.release() aqui: o expo-video SDK 54 gerencia o
-      // ciclo de vida internamente e release() trava o próximo player.
-    }
-  }, [player])
 
-  const { videoStyle, backdropStyle } = useSlideLayout(mediaWidth, mediaHeight)
+  function onStatus(status) {
+    if (status.didJustFinish) onEndedRef.current?.()
+  }
 
-  return (
-    <View style={{ flex: 1, backgroundColor: '#000' }}>
-      {/* Backdrop desfocado para cobrir faixas pretas */}
-      {thumbUri && (
-        <ExpoImage
-          source={{ uri: thumbUri }}
-          style={backdropStyle}
-          contentFit="cover"
-          blurRadius={20}
-          tintColor={undefined}
-        />
-      )}
-      {/* Overlay escuro sobre o backdrop */}
-      <View style={[backdropStyle, { backgroundColor: 'rgba(0,0,0,0.45)' }]} />
-      {/* Vídeo em foreground, girado se necessário */}
-      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
-        <VideoView
-          player={player}
-          style={videoStyle}
-          contentFit="contain"
-          nativeControls={false}
-          surfaceType="textureView"
-        />
-      </View>
-    </View>
-  )
-}
-
-function SlidePhoto({ uri, mediaWidth, mediaHeight, opacity, next }) {
-  const { videoStyle, backdropStyle } = useSlideLayout(mediaWidth, mediaHeight)
+  // Para 90°/270° invertemos as dimensões para o vídeo preencher a tela corretamente
+  // Os controles nativos ficam em pé (não girados) porque o transform é no container
+  const sideways = rotation === 90 || rotation === 270
+  const videoStyle = sideways
+    ? { width: height, height: width, transform: [{ rotate: `${rotation}deg` }] }
+    : rotation !== 0
+      ? { width, height, transform: [{ rotate: `${rotation}deg` }] }
+      : { flex: 1, width: '100%' }
 
   return (
-    <Animated.View style={{ flex: 1, backgroundColor: '#000', opacity }}>
-      {/* Backdrop desfocado */}
-      <ExpoImage
+    <View style={{ flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+      <Video
         source={{ uri }}
-        style={backdropStyle}
-        contentFit="cover"
-        blurRadius={20}
+        style={videoStyle}
+        resizeMode={ResizeMode.CONTAIN}
+        useNativeControls
+        shouldPlay
+        onPlaybackStatusUpdate={onStatus}
       />
-      {/* Overlay escuro */}
-      <View style={[backdropStyle, { backgroundColor: 'rgba(0,0,0,0.45)' }]} />
-      {/* Pré-carrega próxima foto fora do fluxo */}
-      {next && next.media_type !== 'video' && (
-        <Image source={{ uri: next.localUri }} style={{ width: 1, height: 1, position: 'absolute', opacity: 0 }} />
-      )}
-      {/* Foto em foreground, girada se necessário */}
-      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
-        <Image
-          source={{ uri }}
-          style={videoStyle}
-          resizeMode="contain"
-        />
-      </View>
-    </Animated.View>
+    </View>
   )
 }
 
@@ -759,10 +682,41 @@ function AppInner() {
 
   const [slideshow, setSlideshow] = useState(null)
   const [slideIndex, setSlideIndex] = useState(0)
+  const [slidePrevIndex, setSlidePrevIndex] = useState(null)
   const [slidePreparing, setSlidePreparing] = useState('')
   const slideOpacity = useRef(new Animated.Value(1)).current
   const slideOverlay = useRef(new Animated.Value(0)).current
   const slideTimerRef = useRef(null)
+  const advanceSlideRef = useRef(null)
+  const slideTouchStart = useRef({ x: 0, y: 0 })
+  const slideSwipeFired = useRef(false)  // dispara só uma vez por gesto
+
+  function onSlideTouchStart(e) {
+    const t = e.nativeEvent.touches[0]
+    if (t) {
+      slideTouchStart.current = { x: t.pageX, y: t.pageY }
+      slideSwipeFired.current = false
+    }
+  }
+
+  function onSlideTouchMove(e) {
+    if (slideSwipeFired.current) return
+    const t = e.nativeEvent.touches[0]
+    if (!t) return
+    const dx = t.pageX - slideTouchStart.current.x
+    const dy = t.pageY - slideTouchStart.current.y
+    // Threshold: 6% da largura da tela (funciona em portrait e landscape)
+    const { width } = require('react-native').Dimensions.get('window')
+    if (Math.abs(dx) > width * 0.06 && Math.abs(dx) > Math.abs(dy) * 2.5) {
+      slideSwipeFired.current = true
+      if (dx < 0) advanceSlideRef.current?.(1)
+      else advanceSlideRef.current?.(-1)
+    }
+  }
+
+  function onSlideTouchEnd() {
+    slideSwipeFired.current = false
+  }
 
   // Mantém o espelho de items sempre atualizado.
   useEffect(() => {
@@ -975,6 +929,25 @@ function AppInner() {
       ;[next[index], next[swapIndex]] = [next[swapIndex], next[index]]
       return next
     })
+  }
+
+  async function setItemRotation(item, rotation) {
+    try {
+      const url = apiUrl(baseUrl, `/media/${item.id}/rotation`)
+      await fetchWithTimeout(url, {
+        method: 'PATCH',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rotation }),
+      })
+      setReorderItems((prev) => prev.map((it) => it.id === item.id ? { ...it, display_rotation: rotation } : it))
+      setAlbumMedia((prev) => {
+        const next = { ...prev }
+        for (const aid of Object.keys(next)) {
+          next[aid] = next[aid].map((it) => it.id === item.id ? { ...it, display_rotation: rotation } : it)
+        }
+        return next
+      })
+    } catch (_) {}
   }
 
   async function saveAlbumOrder(albumId) {
@@ -1989,9 +1962,39 @@ function AppInner() {
     }
     setSlidePreparing('')
     setSlideIndex(0)
-    slideOpacity.setValue(1)
+    slideOpacity.setValue(0)
     ScreenOrientation.unlockAsync().catch(() => {})
     setSlideshow({ album, items: prepared })
+    Animated.timing(slideOpacity, {
+      toValue: 0, duration: 0, useNativeDriver: true,
+    }).start()
+  }
+
+  function setSlideshowItemRotation(item, rotation) {
+    // Atualiza o item dentro de slideshow.items imediatamente (sem precisar reiniciar)
+    setSlideshow((cur) => {
+      if (!cur) return cur
+      return { ...cur, items: cur.items.map((it) => it.id === item.id ? { ...it, display_rotation: rotation } : it) }
+    })
+    setItemRotation(item, rotation)
+  }
+
+  function openSlideRotationPicker() {
+    if (!slideshow) return
+    const current = slideshow.items[slideIndex]
+    if (!current) return
+    const cur = current.display_rotation || 0
+    Alert.alert(
+      'Rotação',
+      `Atual: ${cur}°`,
+      [
+        { text: '0°',   onPress: () => setSlideshowItemRotation(current, 0)   },
+        { text: '90°',  onPress: () => setSlideshowItemRotation(current, 90)  },
+        { text: '180°', onPress: () => setSlideshowItemRotation(current, 180) },
+        { text: '270°', onPress: () => setSlideshowItemRotation(current, 270) },
+        { text: 'Cancelar', style: 'cancel' },
+      ]
+    )
   }
 
   function stopSlideshow() {
@@ -2002,31 +2005,26 @@ function AppInner() {
   }
 
   function advanceSlide(step = 1) {
-    setSlideshow((current) => {
-      if (!current) return current
-      const currentItem = current.items[slideIndex]
-      if (currentItem?.media_type === 'video') {
-        // Vídeo: troca imediata sem depender do slideIndex da closure
+    // Fade-through-black: overlay preto aparece, troca o item, overlay some
+    Animated.timing(slideOpacity, {
+      toValue: 1, duration: 250,
+      easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+    }).start(() => {
+      setSlideshow((current) => {
+        if (!current) return current
         setSlideIndex((prev) => {
           const total = current.items.length
           return (prev + step + total) % total
         })
-      } else {
-        // Foto: fade out → troca → fade in
-        Animated.timing(slideOpacity, { toValue: 0, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
-          if (!finished) return
-          setSlideIndex((prev) => {
-            const total = current.items.length
-            const next = (prev + step + total) % total
-            slideOpacity.setValue(0)
-            Animated.timing(slideOpacity, { toValue: 1, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start()
-            return next
-          })
-        })
-      }
-      return current
+        return current
+      })
+      Animated.timing(slideOpacity, {
+        toValue: 0, duration: 250,
+        easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+      }).start()
     })
   }
+  advanceSlideRef.current = advanceSlide
 
   useEffect(() => {
     if (!slideshow) return
@@ -2077,8 +2075,8 @@ function AppInner() {
               setItems((cur) => cur.map((it) => doneIds.has(it.id) && !it.is_transcoded ? { ...it, is_transcoded: true } : it))
             }
           }
-          // Para de fazer polling quando tudo está done ou falhou
-          if (data.status === 'done' || data.status === 'none' || data.status === 'failed') {
+          // Para de fazer polling quando tudo está done, falhou ou partial (sem pending/running)
+          if (data.status === 'done' || data.status === 'none' || data.status === 'failed' || data.status === 'partial') {
             if (albumTranscodeTimerRef.current) clearInterval(albumTranscodeTimerRef.current)
             albumTranscodeTimerRef.current = null
           }
@@ -2582,7 +2580,7 @@ function AppInner() {
                   </Pressable>
                   {(() => {
                     const ts = albumTranscode[album.id]
-                    const ready = !ts || ts.status === 'done' || ts.status === 'none'
+                    const ready = !ts || ts.status === 'done' || ts.status === 'none' || ts.status === 'partial'
                     return (
                       <Pressable style={[styles.albumPlay, !ready && { opacity: 0.35 }]} onPress={() => ready && startSlideshow(album)} disabled={!ready}>
                         <Text style={styles.albumPlayText}>{ready ? '▶' : '⏳'}</Text>
@@ -2664,7 +2662,7 @@ function AppInner() {
             })()}
             {(() => {
               const ts = albumTranscode[openAlbum.id]
-              const ready = !ts || ts.status === 'done' || ts.status === 'none'
+              const ready = !ts || ts.status === 'done' || ts.status === 'none' || ts.status === 'partial'
               return (
                 <Pressable style={[styles.albumPlay, !ready && { opacity: 0.35 }]} onPress={() => ready && startSlideshow(openAlbum)} disabled={!ready}>
                   <Text style={styles.albumPlayText}>{ready ? '▶' : '⏳'}</Text>
@@ -2680,6 +2678,8 @@ function AppInner() {
                 <Text style={styles.transcodeBarText}>
                   {ts.status === 'failed'
                     ? '⚠ Falha ao transcodificar vídeos'
+                    : ts.status === 'partial'
+                    ? `⚠ ${ts.failed} vídeo(s) falharam — restantes prontos`
                     : `⏳ Otimizando vídeos… ${ts.percent}%`}
                 </Text>
               </View>
@@ -2692,9 +2692,25 @@ function AppInner() {
               contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 12 }}
               renderItem={({ item, index }) => (
                 <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, marginBottom: 8, padding: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
-                  <ExpoImage source={thumbSource(item)} style={{ width: 52, height: 52, borderRadius: 6 }} contentFit="cover" cachePolicy="memory-disk" />
+                  <View style={{ width: 52, height: 52, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderRadius: 6 }}>
+                    <ExpoImage
+                      source={thumbSource(item)}
+                      style={[
+                        { width: 52, height: 52, borderRadius: 6 },
+                        (item.display_rotation || 0) !== 0 && { transform: [{ rotate: `${item.display_rotation}deg` }] },
+                      ]}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                    />
+                  </View>
                   <Text style={{ flex: 1, marginLeft: 10, fontSize: 13, color: '#0f172a' }} numberOfLines={1}>{item.filename}</Text>
-                  <Text style={{ color: '#94a3b8', fontSize: 12, marginRight: 8 }}>{index + 1}</Text>
+                  <Text style={{ color: '#94a3b8', fontSize: 12, marginRight: 4 }}>{index + 1}</Text>
+                  <Pressable onPress={() => setItemRotation(item, ((item.display_rotation || 0) + 90) % 360)} style={{ padding: 6, alignItems: 'center' }}>
+                    <Text style={{ fontSize: 16 }}>🔄</Text>
+                    {(item.display_rotation || 0) !== 0 && (
+                      <Text style={{ fontSize: 9, color: '#2563eb', marginTop: -2 }}>{item.display_rotation}°</Text>
+                    )}
+                  </Pressable>
                   <Pressable onPress={() => moveReorderItem(index, -1)} disabled={index === 0} style={{ padding: 8, opacity: index === 0 ? 0.3 : 1 }}>
                     <Text style={{ fontSize: 18 }}>↑</Text>
                   </Pressable>
@@ -2983,13 +2999,23 @@ function AppInner() {
             >
               <Animated.Image
                 source={{ uri: fullUri }}
-                style={[styles.fullImage, { transform: [{ scale: viewerScale }, { translateX: viewerTranslateX }, { translateY: viewerTranslateY }] }]}
+                style={[styles.fullImage, { transform: [
+                  { scale: viewerScale },
+                  { translateX: viewerTranslateX },
+                  { translateY: viewerTranslateY },
+                  ...(selected?.display_rotation ? [{ rotate: `${selected.display_rotation}deg` }] : []),
+                ] }]}
                 resizeMode="contain"
               />
             </View>
           )}
           {!fullLoading && fullUri && selected?.media_type === 'video' && (
-            <Video source={{ uri: fullUri }} style={styles.fullImage} useNativeControls resizeMode={ResizeMode.CONTAIN} />
+            <Video
+              source={{ uri: fullUri }}
+              style={[styles.fullImage, selected?.display_rotation ? { transform: [{ rotate: `${selected.display_rotation}deg` }] } : undefined]}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+            />
           )}
         </SafeAreaView>
       </Modal>
@@ -3035,8 +3061,8 @@ function AppInner() {
         </View>
       )}
 
-      <Modal visible={!!slideshow} animationType="fade" onRequestClose={stopSlideshow}>
-        <View style={styles.slideScreen}>
+      <Modal visible={!!slideshow} animationType="fade" statusBarTranslucent onRequestClose={stopSlideshow}>
+        <View style={styles.slideScreen} onTouchStart={onSlideTouchStart} onTouchMove={onSlideTouchMove} onTouchEnd={onSlideTouchEnd}>
           {slideshow && (() => {
             const total = slideshow.items.length
             const current = slideshow.items[slideIndex]
@@ -3045,41 +3071,44 @@ function AppInner() {
             if (!current) return null
             return (
               <>
-                {/* Vídeo atual */}
-                {current.media_type === 'video' && (
-                  <SlideVideo
-                    key={current.id}
-                    uri={current.localUri}
-                    onEnded={() => advanceSlide(1)}
-                    preloadUri={next?.localUri}
-                    mediaWidth={current.width}
-                    mediaHeight={current.height}
-                    thumbUri={current.thumbUri}
-                  />
-                )}
-                {/* Foto atual */}
-                {current.media_type !== 'video' && (
-                  <SlidePhoto
-                    key={current.id}
-                    uri={current.localUri}
-                    mediaWidth={current.width}
-                    mediaHeight={current.height}
-                    opacity={slideOpacity}
-                    next={next}
-                  />
-                )}
-                <Pressable style={[styles.slideClose, { left: 20, right: undefined }]} onPress={() => advanceSlide(-1)}>
-                  <Text style={styles.slideCloseText}>‹</Text>
-                </Pressable>
-                <Pressable style={styles.slideClose} onPress={stopSlideshow}>
+                {/* Item atual */}
+                <View style={{ flex: 1, width: '100%', backgroundColor: '#000' }}>
+                  {current.media_type === 'video' ? (
+                    <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} rotation={current.display_rotation || 0} />
+                  ) : (
+                    <>
+                      {next && next.media_type !== 'video' && (
+                        <Image source={{ uri: next.localUri }} style={{ width: 1, height: 1, position: 'absolute', opacity: 0 }} />
+                      )}
+                      <Image
+                        source={{ uri: current.localUri }}
+                        style={[
+                          { flex: 1, width: '100%' },
+                          (current.display_rotation || 0) !== 0 && { transform: [{ rotate: `${current.display_rotation}deg` }] },
+                        ]}
+                        resizeMode="contain"
+                      />
+                    </>
+                  )}
+                </View>
+                {/* Overlay preto para transição fade-through-black */}
+                <Animated.View
+                  style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: slideOpacity }]}
+                  pointerEvents="none"
+                />
+
+                <Pressable style={[styles.slideClose, { zIndex: 10, top: insets.top + 12, right: insets.right + 12 }]} onPress={stopSlideshow}>
                   <Text style={styles.slideCloseText}>✕</Text>
                 </Pressable>
-                <Pressable style={[styles.slideClose, { top: undefined, bottom: 90, right: 20 }]} onPress={() => advanceSlide(1)}>
-                  <Text style={styles.slideCloseText}>›</Text>
-                </Pressable>
-                <View style={styles.slideCounter}>
+                <View style={[styles.slideCounter, { zIndex: 10, bottom: insets.bottom + 40 }]}>
                   <Text style={styles.slideCounterText}>{slideIndex + 1} / {total}</Text>
                 </View>
+                <Pressable style={[styles.slideRotateBtn, { zIndex: 10, bottom: insets.bottom + 40, right: insets.right + 12 }]} onPress={openSlideRotationPicker}>
+                  <Text style={styles.slideRotateBtnText}>🔄</Text>
+                  {(current.display_rotation || 0) !== 0 && (
+                    <Text style={styles.slideRotateBtnDeg}>{current.display_rotation}°</Text>
+                  )}
+                </Pressable>
               </>
             )
           })()}
@@ -3206,12 +3235,15 @@ const styles = StyleSheet.create({
   slidePrepareText: { color: '#ffffff', fontWeight: '800', marginTop: 12 },
   slideScreen: { flex: 1, backgroundColor: '#000000' },
   slideMedia: { flex: 1, width: '100%' },
-  slideClose: { position: 'absolute', top: 40, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
-  slideCloseText: { color: '#ffffff', fontSize: 18, fontWeight: '900' },
-  slideCounter: { position: 'absolute', bottom: 36, alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 10 },
+  slideClose: { position: 'absolute', top: 12, right: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.25)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  slideCloseText: { color: 'rgba(255,255,255,0.7)', fontSize: 18, fontWeight: '900' },
+  slideCounter: { position: 'absolute', bottom: 36, alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 10 },
+  slideRotateBtn: { position: 'absolute', right: 12, bottom: 40, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.25)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  slideRotateBtnText: { fontSize: 22 },
+  slideRotateBtnDeg: { color: '#fff', fontSize: 9, fontWeight: '700', marginTop: -2 },
   slideVideoIcon: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
   slideVideoIconText: { color: '#fff', fontSize: 24, marginLeft: 4 },
-  slideCounterText: { color: '#ffffff', fontWeight: '700' },
+  slideCounterText: { color: 'rgba(255,255,255,0.7)', fontWeight: '700' },
   sliderControlBtn: { paddingHorizontal: 16, paddingVertical: 10 },
   sliderControlText: { color: '#ffffff', fontSize: 22, fontWeight: '900' },
   stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 4 },

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.core.config import settings
 from app.models import Media, ProcessingJob, Face, media_faces
-from app.services.organizer import scan_source_directory, scan_library_directories, organize_file, cleanup_source_trash, get_media_type, get_media_date, get_image_dimensions, get_video_metadata
+from app.services.organizer import scan_source_directory, scan_library_directories, organize_file, cleanup_source_trash, get_media_type, get_media_date, get_image_dimensions, get_video_metadata, get_image_orientation
 from app.services.duplicates import update_perceptual_hash, check_duplicate, compute_perceptual_hash
 from app.services.ai_vision import process_media_ai
 from app.services.face_recognition_service import process_faces_in_media, cluster_unknown_faces
@@ -146,14 +146,17 @@ def _preprocess_library_file(filepath: str) -> dict:
         needs_transcode = False
         phash = None
 
+        display_rotation = 0
         if media_type == "image":
             width, height = get_image_dimensions(filepath)
             phash = compute_perceptual_hash(filepath)
+            display_rotation = get_image_orientation(filepath)
         elif media_type == "video":
             meta = get_video_metadata(filepath)
             width, height = meta.get("width"), meta.get("height")
             duration = meta.get("duration")
             video_codec = meta.get("codec")
+            display_rotation = meta.get("rotation", 0)
             # hevc excluido: Chrome/Windows nao suporta nativamente
             web_codecs = {"h264", "vp8", "vp9", "av1"}
             if video_codec and video_codec not in web_codecs:
@@ -171,6 +174,7 @@ def _preprocess_library_file(filepath: str) -> dict:
             "duration": duration,
             "video_codec": video_codec,
             "needs_transcode": needs_transcode,
+            "display_rotation": display_rotation,
             "phash": phash,
             "error": None,
         }
@@ -291,6 +295,7 @@ def _run_scan_and_organize_locked() -> int:
                                 duration_seconds=result["duration"],
                                 video_codec=result["video_codec"],
                                 needs_transcode=result["needs_transcode"],
+                                display_rotation=result["display_rotation"],
                                 is_organized=True,
                             )
                             db.add(media)
@@ -730,17 +735,20 @@ def _run_sync_locked() -> dict:
                         media_type = get_media_type(filepath)
                         media_date = get_media_date(filepath)
 
-                        from app.services.organizer import get_image_dimensions, get_video_metadata
+                        from app.services.organizer import get_image_dimensions, get_video_metadata, get_image_orientation
                         width, height, duration = None, None, None
                         video_codec = None
                         needs_transcode = False
+                        display_rotation = 0
                         if media_type == "image":
                             width, height = get_image_dimensions(filepath)
+                            display_rotation = get_image_orientation(filepath)
                         elif media_type == "video":
                             meta = get_video_metadata(filepath)
                             width, height = meta.get("width"), meta.get("height")
                             duration = meta.get("duration")
                             video_codec = meta.get("codec")
+                            display_rotation = meta.get("rotation", 0)
                             # hevc excluido: Chrome/Windows nao suporta nativamente
                             web_codecs = {"h264", "vp8", "vp9", "av1"}
                             if video_codec and video_codec not in web_codecs:
@@ -759,6 +767,7 @@ def _run_sync_locked() -> dict:
                             duration_seconds=duration,
                             video_codec=video_codec,
                             needs_transcode=needs_transcode,
+                            display_rotation=display_rotation,
                             is_organized=True,
                         )
                         db.add(media)
