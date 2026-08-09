@@ -555,13 +555,22 @@ async function saveItemToGalleryFile(tempUri, item) {
   return { asset, uri: localUri }
 }
 
-function SlideVideo({ uri, onEnded, rotation = 0 }) {
+function SlideVideo({ uri, onEnded, rotation = 0, onVideoStart, onVideoEnd }) {
   const { width, height } = require('react-native').Dimensions.get('window')
   const onEndedRef = useRef(onEnded)
+  const startedRef = useRef(false)
   useEffect(() => { onEndedRef.current = onEnded }, [onEnded])
 
   function onStatus(status) {
-    if (status.didJustFinish) onEndedRef.current?.()
+    if (status.isPlaying && !startedRef.current) {
+      startedRef.current = true
+      onVideoStart?.()
+    }
+    if (status.didJustFinish) {
+      startedRef.current = false
+      onVideoEnd?.()
+      onEndedRef.current?.()
+    }
   }
 
   // Para 90°/270° invertemos as dimensões para o vídeo preencher a tela corretamente
@@ -660,6 +669,7 @@ function AppInner() {
   const [albums, setAlbums] = useState([])
   const [openAlbumId, setOpenAlbumId] = useState(null)
   const [reorderMode, setReorderMode] = useState(false)
+  const saveOrderTimer = useRef(null)
   const [reorderItems, setReorderItems] = useState([])
   // Mídias de cada álbum vindas do backend (mapa albumId -> array de itens).
   // O álbum pode conter mídias que NÃO estão na lista sincronizada `items`
@@ -684,6 +694,11 @@ function AppInner() {
   const [slideIndex, setSlideIndex] = useState(0)
   const [slidePrevIndex, setSlidePrevIndex] = useState(null)
   const [slidePreparing, setSlidePreparing] = useState('')
+  const [slidePhase, setSlidePhase] = useState('main') // 'intro' | 'main' | 'outro'
+  const [albumMusicFile, setAlbumMusicFile] = useState({}) // albumId -> filename
+  const [musicList, setMusicList] = useState([])
+  const slideSoundRef = useRef(null) // Audio.Sound instance
+  const [renderJobs, setRenderJobs] = useState({}) // albumId -> { slug, status, progress }
   const slideOpacity = useRef(new Animated.Value(1)).current
   const slideOverlay = useRef(new Animated.Value(0)).current
   const slideTimerRef = useRef(null)
@@ -780,6 +795,7 @@ function AppInner() {
       setToken(parsed.token || '')
       setSyncToken(parsed.syncToken || null)
       if (parsed.slideSeconds) setSlideSeconds(parsed.slideSeconds)
+      if (parsed.albumMusicFile) setAlbumMusicFile(parsed.albumMusicFile)
       if (parsed.token) {
         loadAlbums(parsed.token, parsed.baseUrl || baseUrl)
       }
@@ -793,6 +809,7 @@ function AppInner() {
       token,
       syncToken,
       slideSeconds,
+      albumMusicFile,
       ...next,
     }
     await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
@@ -921,14 +938,42 @@ function AppInner() {
     setReorderMode(true)
   }
 
+  function sortReorderByDate(direction) {
+    const sorted = [...reorderItems].sort((a, b) => {
+      const ta = a.date_taken || a.created_at || ''
+      const tb = b.date_taken || b.created_at || ''
+      return direction === 'asc' ? ta.localeCompare(tb) : tb.localeCompare(ta)
+    })
+    setReorderItems(sorted)
+    const url = apiUrl(baseUrl, `/albums/${openAlbumId}/order`)
+    fetchWithTimeout(url, {
+      method: 'PUT',
+      headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media_ids: sorted.map((it) => it.id) }),
+    }).catch(() => {})
+  }
+
   function moveReorderItem(index, direction) {
+    let newItems
     setReorderItems((prev) => {
       const next = [...prev]
       const swapIndex = index + direction
       if (swapIndex < 0 || swapIndex >= next.length) return prev
       ;[next[index], next[swapIndex]] = [next[swapIndex], next[index]]
+      newItems = next
       return next
     })
+    // Auto-save com debounce de 800ms
+    if (saveOrderTimer.current) clearTimeout(saveOrderTimer.current)
+    saveOrderTimer.current = setTimeout(() => {
+      if (!openAlbumId || !newItems) return
+      const url = apiUrl(baseUrl, `/albums/${openAlbumId}/order`)
+      fetchWithTimeout(url, {
+        method: 'PUT',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ media_ids: newItems.map((it) => it.id) }),
+      }).catch(() => {})
+    }, 800)
   }
 
   async function setItemRotation(item, rotation) {
@@ -1962,12 +2007,25 @@ function AppInner() {
     }
     setSlidePreparing('')
     setSlideIndex(0)
-    slideOpacity.setValue(0)
+    slideOpacity.setValue(1)
     ScreenOrientation.unlockAsync().catch(() => {})
+    slideOpacity.setValue(0)  // intro visível desde o início
+    slideOverlay.setValue(0)
+    setSlidePhase('intro')
     setSlideshow({ album, items: prepared })
-    Animated.timing(slideOpacity, {
-      toValue: 0, duration: 0, useNativeDriver: true,
-    }).start()
+    startSlideshowMusic(album.id)
+    // Intro: mostra por 3s depois faz transição para main
+    setTimeout(() => {
+      // fade-to-black
+      Animated.timing(slideOverlay, {
+        toValue: 1, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+      }).start(() => {
+        setSlidePhase('main')
+        Animated.timing(slideOverlay, {
+          toValue: 0, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+        }).start()
+      })
+    }, 6000)
   }
 
   function setSlideshowItemRotation(item, rotation) {
@@ -1997,30 +2055,185 @@ function AppInner() {
     )
   }
 
+  async function openMusicPicker(albumId) {
+    if (!musicList.length) {
+      // Busca lista do servidor
+      try {
+        const url = apiUrl(baseUrl, '/music')
+        const res = await fetchWithTimeout(url, { headers: authHeaders(token) })
+        if (res.ok) {
+          const data = await res.json()
+          setMusicList(data.files || [])
+          showMusicPickerAlert(albumId, data.files || [])
+          return
+        }
+      } catch (_) {}
+      Alert.alert('Música', 'Não foi possível carregar a lista de músicas.')
+      return
+    }
+    showMusicPickerAlert(albumId, musicList)
+  }
+
+  function showMusicPickerAlert(albumId, files) {
+    const current = albumMusicFile[albumId]
+    const pick = (filename) => {
+      const next = { ...albumMusicFile, [albumId]: filename }
+      setAlbumMusicFile(next)
+      AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        baseUrl, email, token, syncToken, slideSeconds, albumMusicFile: next,
+      })).catch(() => {})
+    }
+    const options = [
+      { text: '🔇 Sem música', onPress: () => pick(null) },
+      ...files.map((f) => ({
+        text: (current === f ? '✓ ' : '') + f,
+        onPress: () => pick(f),
+      })),
+      { text: 'Cancelar', style: 'cancel' },
+    ]
+    Alert.alert('Música do slideshow', current ? `Atual: ${current}` : 'Sem música', options)
+  }
+
+  function askAndExportSlideshowMp4(album) {
+    Alert.alert(
+      'Formato do vídeo',
+      'Escolha a orientação do vídeo exportado:',
+      [
+        { text: '📱 Celular (vertical)', onPress: () => exportSlideshowMp4(album, '1080x1920') },
+        { text: '📺 TV (horizontal)', onPress: () => exportSlideshowMp4(album, '1920x1080') },
+        { text: 'Cancelar', style: 'cancel' },
+      ]
+    )
+  }
+
+  async function exportSlideshowMp4(album, resolution = '1080x1920') {
+    const renderItems = album.itemIds.map((id) => {
+      const m = items.find((it) => it.id === id)
+      if (!m) return null
+      return {
+        media_id: m.id,
+        media_type: m.media_type === 'video' ? 'video' : 'image',
+        display_rotation: m.display_rotation || 0,
+        duration: slideSeconds || 5,
+      }
+    }).filter(Boolean)
+
+    if (!renderItems.length) {
+      Alert.alert('Exportar', 'Álbum vazio.')
+      return
+    }
+
+    const music_filename = albumMusicFile[album.id] || null
+
+    try {
+      const url = apiUrl(baseUrl, '/slideshow-render/start')
+      const res = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          album_id: album.id,
+          album_name: album.name,
+          items: renderItems,
+          music_filename,
+          photo_duration: slideSeconds || 5,
+          resolution,
+        }),
+      })
+      if (!res.ok) throw new Error(`Erro ${res.status}`)
+      const data = await res.json()
+      const slug = data.slug
+      setRenderJobs((p) => ({ ...p, [album.id]: { slug, status: 'running', progress: 0 } }))
+      Alert.alert('Exportar MP4', 'Renderização iniciada! Aguarde e então compartilhe o link.', [{ text: 'OK' }])
+      // polling
+      pollRenderJob(album.id, slug)
+    } catch (e) {
+      Alert.alert('Exportar', 'Falha ao iniciar: ' + e.message)
+    }
+  }
+
+  async function pollRenderJob(albumId, slug) {
+    const url = apiUrl(baseUrl, `/slideshow-render/status/${slug}`)
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetchWithTimeout(url, { headers: authHeaders(token) })
+        if (!res.ok) return
+        const data = await res.json()
+        setRenderJobs((p) => ({ ...p, [albumId]: { slug, status: data.status, progress: data.progress } }))
+        if (data.status === 'done') {
+          clearInterval(interval)
+          const shareUrl = `${normalizeBaseUrl(baseUrl)}/s/${slug}`
+          Alert.alert('MP4 Pronto! 🎉', `Link para compartilhar:\n${shareUrl}`, [
+            { text: 'Compartilhar', onPress: () => Share.share({ message: shareUrl, url: shareUrl }) },
+            { text: 'OK' },
+          ])
+        } else if (data.status === 'failed') {
+          clearInterval(interval)
+          Alert.alert('Falhou', data.error_message || 'Erro desconhecido')
+        }
+      } catch (_) {}
+    }, 4000)
+  }
+
+  async function startSlideshowMusic(albumId) {
+    const filename = albumMusicFile[albumId]
+    if (!filename) return
+    try {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+      })
+      const url = apiUrl(baseUrl, `/music/stream/${encodeURIComponent(filename)}`) + (token ? `?token=${encodeURIComponent(token)}` : '')
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: url, headers: token ? { Authorization: `Bearer ${token}` } : {} },
+        { shouldPlay: true, isLooping: true, volume: 1.0 }
+      )
+      slideSoundRef.current = sound
+    } catch (e) { console.warn('Music error:', e) }
+  }
+
+  async function stopSlideshowMusic() {
+    if (slideSoundRef.current) {
+      try { await slideSoundRef.current.stopAsync(); await slideSoundRef.current.unloadAsync() } catch (_) {}
+      slideSoundRef.current = null
+    }
+  }
+
+  async function setSlideshowMusicVolume(vol) {
+    if (slideSoundRef.current) {
+      try { await slideSoundRef.current.setVolumeAsync(vol) } catch (_) {}
+    }
+  }
+
   function stopSlideshow() {
     if (slideTimerRef.current) clearTimeout(slideTimerRef.current)
     slideTimerRef.current = null
+    stopSlideshowMusic()
     setSlideshow(null)
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {})
   }
 
   function advanceSlide(step = 1) {
-    // Fade-through-black: overlay preto aparece, troca o item, overlay some
     Animated.timing(slideOpacity, {
-      toValue: 1, duration: 250,
-      easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+      toValue: 1, duration: 250, easing: Easing.inOut(Easing.ease), useNativeDriver: true,
     }).start(() => {
       setSlideshow((current) => {
         if (!current) return current
         setSlideIndex((prev) => {
           const total = current.items.length
-          return (prev + step + total) % total
+          const next = prev + step
+          // Último item avançando para frente → outro
+          if (next >= total && step > 0) {
+            setSlidePhase('outro')
+            setTimeout(() => stopSlideshow(), 4000)
+            return prev
+          }
+          return (next + total) % total
         })
         return current
       })
       Animated.timing(slideOpacity, {
-        toValue: 0, duration: 250,
-        easing: Easing.inOut(Easing.ease), useNativeDriver: true,
+        toValue: 0, duration: 250, easing: Easing.inOut(Easing.ease), useNativeDriver: true,
       }).start()
     })
   }
@@ -2597,7 +2810,7 @@ function AppInner() {
       {activeTab === 'albums' && openAlbum && (
         <View style={styles.tabContent}>
           <View style={styles.albumHeaderBar}>
-            <Pressable style={styles.backButton} onPress={() => { setOpenAlbumId(null); setReorderMode(false) }}>
+            <Pressable style={styles.backButton} onPress={() => { if (reorderMode) saveAlbumOrder(openAlbum.id); setOpenAlbumId(null); setReorderMode(false) }}>
               <Text style={styles.backButtonText}>← Álbuns</Text>
             </Pressable>
             <Text style={[styles.topTitle, { flex: 1, fontSize: 22 }]} numberOfLines={1}>{openAlbum.name}</Text>
@@ -2622,21 +2835,12 @@ function AppInner() {
             </Pressable>
             {/* Botão reordenar */}
             <Pressable
-              style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(99,102,241,0.85)' }]}
+              style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 8, paddingVertical: 4, backgroundColor: reorderMode ? 'rgba(99,102,241,0.95)' : 'rgba(99,102,241,0.85)' }]}
               onPress={() => reorderMode ? saveAlbumOrder(openAlbum.id) : startReorder(openAlbum)}
               hitSlop={8}
             >
-              <Text style={styles.hdBadgeText}>{reorderMode ? '💾' : '⇅'}</Text>
+              <Text style={styles.hdBadgeText}>{reorderMode ? '💾' : '✏️'}</Text>
             </Pressable>
-            {reorderMode && (
-              <Pressable
-                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(239,68,68,0.85)' }]}
-                onPress={() => setReorderMode(false)}
-                hitSlop={8}
-              >
-                <Text style={styles.hdBadgeText}>✕</Text>
-              </Pressable>
-            )}
             {/* Botão para iniciar otimização HD manualmente */}
             {(() => {
               const ts = albumTranscode[openAlbum.id]
@@ -2670,6 +2874,75 @@ function AppInner() {
               )
             })()}
           </View>
+          {reorderMode && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 8, backgroundColor: 'rgba(99,102,241,0.08)', borderBottomWidth: 1, borderBottomColor: 'rgba(99,102,241,0.15)' }}>
+              <Pressable
+                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(16,185,129,0.85)' }]}
+                onPress={() => sortReorderByDate('asc')}
+                hitSlop={8}
+              >
+                <Text style={styles.hdBadgeText}>📅↑ Mais antigo</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(16,185,129,0.85)' }]}
+                onPress={() => sortReorderByDate('desc')}
+                hitSlop={8}
+              >
+                <Text style={styles.hdBadgeText}>📅↓ Mais novo</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 10, paddingVertical: 5, backgroundColor: albumMusicFile[openAlbum.id] ? 'rgba(147,51,234,0.95)' : 'rgba(147,51,234,0.5)' }]}
+                onPress={() => openMusicPicker(openAlbum.id)}
+                hitSlop={8}
+              >
+                <Text style={styles.hdBadgeText}>🎵{albumMusicFile[openAlbum.id] ? ' ✓' : ''}</Text>
+              </Pressable>
+                      <Pressable
+                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(234,88,12,0.85)' }]}
+                onPress={() => askAndExportSlideshowMp4(openAlbum)}
+                hitSlop={8}
+              >
+                <Text style={styles.hdBadgeText}>
+                  {renderJobs[openAlbum.id]?.status === 'running'
+                    ? `⏳ ${renderJobs[openAlbum.id]?.progress || 0}%`
+                    : renderJobs[openAlbum.id]?.status === 'done'
+                    ? '🎬 ✓'
+                    : '🎬 Exportar'}
+                </Text>
+              </Pressable>
+              {renderJobs[openAlbum.id]?.status === 'done' && (
+                <Pressable
+                  style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(220,38,38,0.85)' }]}
+                  onPress={() => {
+                    const slug = renderJobs[openAlbum.id]?.slug
+                    Alert.alert('Apagar vídeo', 'O MP4 será apagado do servidor e o link deixará de funcionar.', [
+                      { text: 'Cancelar', style: 'cancel' },
+                      { text: 'Apagar', style: 'destructive', onPress: async () => {
+                        try {
+                          const url = apiUrl(baseUrl, `/slideshow-render/${slug}`)
+                          await fetchWithTimeout(url, { method: 'DELETE', headers: authHeaders(token) })
+                          setRenderJobs((p) => { const n = { ...p }; delete n[openAlbum.id]; return n })
+                        } catch (e) {
+                          Alert.alert('Erro', 'Não foi possível apagar: ' + e.message)
+                        }
+                      }},
+                    ])
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.hdBadgeText}>🗑</Text>
+                </Pressable>
+              )}
+              <View style={{ flex: 1 }} />
+              <Pressable
+                style={[styles.hdBadge, { position: 'relative', paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(239,68,68,0.85)' }]}
+                onPress={() => setReorderMode(false)}
+                hitSlop={8}
+              >
+                <Text style={styles.hdBadgeText}>✕ Sair</Text>
+              </Pressable>
+            </View>
+          )}
           {(() => {
             const ts = albumTranscode[openAlbum.id]
             if (!ts || ts.status === 'none' || ts.status === 'done' || ts.status === 'pending') return null
@@ -3068,13 +3341,62 @@ function AppInner() {
             const current = slideshow.items[slideIndex]
             const nextIndex = (slideIndex + 1) % total
             const next = slideshow.items[nextIndex]
+            const firstItem = slideshow.items[0]
+            const bgUri = firstItem ? (firstItem.media_type === 'video' ? firstItem.thumbUri : firstItem.localUri) : null
+
+            // ── INTRO ──
+            if (slidePhase === 'intro') {
+              const photos = slideshow.items.filter((it) => it.media_type !== 'video').length
+              const videos = slideshow.items.filter((it) => it.media_type === 'video').length
+              const estSecs = photos * Math.max(2, slideSeconds) + videos * 30
+              const estMin = Math.floor(estSecs / 60)
+              const estStr = estMin > 0 ? `~${estMin} min` : `~${estSecs}s`
+              return (
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                  {bgUri && <Image source={{ uri: bgUri }} style={[StyleSheet.absoluteFill, { opacity: 0.25 }]} resizeMode="cover" blurRadius={12} />}
+                  <View style={{ alignItems: 'center', paddingHorizontal: 32 }}>
+                    <Text style={{ color: '#fff', fontSize: 32, fontWeight: '900', textAlign: 'center', marginBottom: 12, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 }}>{slideshow.album.name}</Text>
+                    <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 16, textAlign: 'center', marginBottom: 4 }}>
+                      {photos > 0 && `${photos} foto${photos !== 1 ? 's' : ''}`}{photos > 0 && videos > 0 ? '  ·  ' : ''}{videos > 0 && `${videos} vídeo${videos !== 1 ? 's' : ''}`}
+                    </Text>
+                    <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 14, marginTop: 4 }}>{estStr}</Text>
+                  </View>
+                  <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: slideOverlay }]} pointerEvents="none" />
+                  <Pressable style={[styles.slideClose, { zIndex: 10, top: insets.top + 12, right: insets.right + 12 }]} onPress={stopSlideshow}>
+                    <Text style={styles.slideCloseText}>✕</Text>
+                  </Pressable>
+                </View>
+              )
+            }
+
+            // ── OUTRO ──
+            if (slidePhase === 'outro') {
+              return (
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                  {bgUri && <Image source={{ uri: bgUri }} style={[StyleSheet.absoluteFill, { opacity: 0.2 }]} resizeMode="cover" blurRadius={16} />}
+                  <Text style={{ color: '#fff', fontSize: 40, fontWeight: '900', letterSpacing: 4, textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 10 }}>The End</Text>
+                  <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: slideOverlay }]} pointerEvents="none" />
+                  <Pressable style={[styles.slideClose, { zIndex: 10, top: insets.top + 12, right: insets.right + 12 }]} onPress={stopSlideshow}>
+                    <Text style={styles.slideCloseText}>✕</Text>
+                  </Pressable>
+                </View>
+              )
+            }
+
             if (!current) return null
             return (
               <>
                 {/* Item atual */}
                 <View style={{ flex: 1, width: '100%', backgroundColor: '#000' }}>
+                  {/* Fundo desfocado para preencher faixas pretas */}
+                  <Image
+                    source={{ uri: current.media_type === 'video' ? current.thumbUri : current.localUri }}
+                    style={[StyleSheet.absoluteFill, { opacity: 0.75 }]}
+                    resizeMode="cover"
+                    blurRadius={8}
+                  />
                   {current.media_type === 'video' ? (
-                    <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} rotation={current.display_rotation || 0} />
+                    <SlideVideo key={current.id} uri={current.localUri} onEnded={() => advanceSlide(1)} rotation={current.display_rotation || 0} onVideoStart={() => setSlideshowMusicVolume(0.2)} onVideoEnd={() => setSlideshowMusicVolume(1.0)} />
                   ) : (
                     <>
                       {next && next.media_type !== 'video' && (

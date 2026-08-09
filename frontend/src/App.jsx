@@ -21,6 +21,8 @@ import Duplicates from './pages/Duplicates'
 import Maintenance from './pages/Maintenance'
 import MobileApps from './pages/MobileApps'
 import Users from './pages/Users'
+import SlideshowPlayer from './pages/SlideshowPlayer'
+import Logs from './pages/Logs'
 
 function App() {
   const [unavailableDirs, setUnavailableDirs] = useState([])
@@ -58,6 +60,7 @@ function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="duplicates" element={<Duplicates />} />
         <Route path="maintenance" element={<Maintenance />} />
+        <Route path="logs" element={<Logs />} />
         <Route path="mobile" element={<MobileApps />} />
         <Route path="users" element={<Users />} />
         <Route path="dashboard" element={<Dashboard />} />
@@ -67,6 +70,7 @@ function App() {
           <Slideshow />
         </ProtectedRoute>
       } />
+      <Route path="/s/:slug" element={<SlideshowPlayer />} />
     </Routes>
     </StorageContext.Provider>
   )

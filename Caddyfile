@@ -14,7 +14,7 @@
 
 # --- Bloco de TESTE sem SSL (HTTP puro na 8080) ---
 # Acesse http://localhost:8080 para testar sem lidar com certificado.
-:8080 {
+:8181 {
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8000 {
 			flush_interval -1
@@ -48,7 +48,22 @@ pics.meulavoro.com.br:8443 {
 		}
 	}
 
-	# Frontend (SPA) -> build de produção do Vite
+	# Myrtille (RDP via browser) -> IIS local porta 80
+	handle /Myrtille* {
+		reverse_proxy 127.0.0.1:80 {
+			header_up Host "pics.meulavoro.com.br:8443"
+			header_up X-Forwarded-Proto "https"
+			header_up X-Forwarded-Host "pics.meulavoro.com.br:8443"
+			flush_interval -1
+			header_down Location "http://localhost" "https://pics.meulavoro.com.br:8443"
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 60s
+			}
+		}
+	}
+
+	# Frontend SPA — todas as outras rotas servem o index.html (React Router)
 	handle {
 		root * C:\src\pics\frontend\dist
 		try_files {path} /index.html
@@ -61,4 +76,5 @@ pics.meulavoro.com.br:8443 {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
+
 }

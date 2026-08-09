@@ -13,7 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
 from app.core.database import init_db, backup_env_to_db, restore_env_from_db, backup_db_to_zip
-from app.api import auth_router, media_router, persons_router, jobs_router, albums_router, settings_router, mobile_router
+from app.api import auth_router, media_router, persons_router, jobs_router, albums_router, settings_router, mobile_router, music_router, slideshow_render_router, logs_router
 from app.workers.processor import run_scan_and_organize, run_ai_processing, run_face_detection, run_sync, run_rclone_download_job, run_thumbnail_warmup
 
 # Configuração de logging
@@ -31,6 +31,9 @@ scheduler = BackgroundScheduler()
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Inicializando PICS...")
+    # Ativa ring handler de logs em memória (usado pelo endpoint /api/logs/stream)
+    from app.api.logs import get_ring_handler
+    get_ring_handler()
     restore_env_from_db()
     init_db()
     backup_env_to_db()
@@ -53,6 +56,19 @@ async def lifespan(app: FastAPI):
         if orphan_jobs:
             db.commit()
             logger.info(f"Marcados {len(orphan_jobs)} jobs órfãos como interrupted")
+
+        # Marca SlideshowRenderJobs "running" ou "pending" como failed (processo morreu no restart)
+        from app.models import SlideshowRenderJob
+        orphan_renders = db.query(SlideshowRenderJob).filter(
+            SlideshowRenderJob.status.in_(["running", "pending"])
+        ).all()
+        for j in orphan_renders:
+            j.status = "failed"
+            j.error_message = "Interrompido por restart do servidor. Tente exportar novamente."
+            j.updated_at = datetime.datetime.utcnow()
+        if orphan_renders:
+            db.commit()
+            logger.info(f"Marcados {len(orphan_renders)} SlideshowRenderJobs órfãos como failed")
 
         # Reseta AlbumTranscodeJobs "running" para "pending" e retoma os "pending" orphãos
         orphan_transcode = db.query(AlbumTranscodeJob).filter(AlbumTranscodeJob.status == "running").all()
@@ -187,6 +203,9 @@ app.include_router(jobs_router, prefix="/api")
 app.include_router(albums_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(mobile_router, prefix="/api")
+app.include_router(music_router, prefix="/api")
+app.include_router(slideshow_render_router, prefix="/api")
+app.include_router(logs_router, prefix="/api")
 
 
 @app.get("/api/health")

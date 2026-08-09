@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # Diretórios
     source_dir: str = "/home/kkirner/src/pics/FOTOS/source"
     organized_dir: str = "/home/kkirner/src/pics/FOTOS/organized"
+    music_dir: str = ""  # Pasta de músicas MP3 para o slideshow
+    slideshows_dir: str = ""  # Pasta onde salvar os MP4 de slideshow renderizados
 
     # Organização
     # Padrão: "year/month" = YYYY/MM/  |  "year_month" = YYYY_MM[_descricao]/

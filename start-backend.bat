@@ -22,18 +22,27 @@ if errorlevel 1 (
 
 if not exist "logs" mkdir logs
 
-if exist "venv\Scripts\activate.bat" (
-    call venv\Scripts\activate.bat
-    if errorlevel 1 (
-        echo [AVISO] Falha ao ativar o venv. Continuando com Python global.
-    ) else (
-        set "PYTHONCMD=python"
-    )
+if exist "venv\Scripts\python.exe" (
+    set "PYTHONCMD=venv\Scripts\python.exe"
+    if exist "venv\Scripts\activate.bat" call venv\Scripts\activate.bat
 ) else (
     echo [WARN] venv nao encontrado. Usando Python global.
 )
 
 echo Iniciando backend em http://0.0.0.0:8000 ...
-"%PYTHONCMD%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-rem pause
-exit
+
+:: Verifica se ja existe outro processo escutando na porta 8000
+netstat -ano | findstr /R "\<8000\>" | findstr "LISTENING" >nul 2>&1
+if %ERRORLEVEL%==0 (
+    echo [AVISO] Porta 8000 ja esta em uso. Outra instancia do backend ja esta rodando.
+    echo [AVISO] Fechando esta janela duplicada...
+    timeout /t 3 /nobreak >nul
+    exit /b 0
+)
+
+:loop
+echo [%date% %time%] Iniciando uvicorn...
+"%PYTHONCMD%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > logs\backend.log 2>&1
+echo [%date% %time%] uvicorn encerrou com codigo %ERRORLEVEL%. Reiniciando em 5s...
+timeout /t 5 /nobreak >nul
+goto loop

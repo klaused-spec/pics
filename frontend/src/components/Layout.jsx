@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { Home, Image, Search, Users, UserCog, Settings, Database, ChevronLeft, ChevronRight, LogOut, Smartphone, HardDrive } from 'lucide-react'
+import { Home, Image, Search, Users, UserCog, Settings, Database, ChevronLeft, ChevronRight, LogOut, Smartphone, HardDrive, Terminal } from 'lucide-react'
 import { useStorageStatus } from '../App'
 
 function Layout() {
@@ -31,6 +31,7 @@ function Layout() {
     { to: '/search', icon: Search, label: 'Busca' },
     { to: '/persons', icon: Users, label: 'Pessoas' },
     { to: '/maintenance', icon: Database, label: 'Manutenção' },
+    { to: '/logs', icon: Terminal, label: 'Logs' },
     { to: '/mobile', icon: Smartphone, label: 'Android' },
     { to: '/users', icon: UserCog, label: 'Usuários' },
     { to: '/settings', icon: Settings, label: 'Config' },

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X, Cloud } from 'lucide-react'
-import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp, updateAndRestart, backfillDimensions } from '../api'
+import { AlertTriangle, RotateCcw, Zap, Trash2, Database, Activity, ChevronDown, ChevronUp, X, Cloud, Music } from 'lucide-react'
+import { startSync, startScan, startAiProcessing, startFaceDetection, startFullPipeline, startPurgeMissing, startRcloneDownload, getRcloneLog, databaseAudit, getJobs, startThumbnailWarmup, deleteJob, deleteAllJobs, resumeInterruptedJobs, resumeJob, rebootServer, restartApp, updateAndRestart, backfillDimensions, listMusic, uploadMusic, deleteMusic } from '../api'
 
 export default function Maintenance() {
   const [audit, setAudit] = useState(null)
@@ -12,6 +12,9 @@ export default function Maintenance() {
   const [resumingJobId, setResumingJobId] = useState(null)
   const [rcloneLog, setRcloneLog] = useState([])
   const rcloneLogRef = useRef(null)
+  const [musicFiles, setMusicFiles] = useState([])
+  const [musicUploading, setMusicUploading] = useState(false)
+  const musicInputRef = useRef(null)
 
   useEffect(() => {
     // Mantém o log rolado para a última linha conforme chegam novas.
@@ -24,7 +27,27 @@ export default function Maintenance() {
     loadAudit()
     loadJobs()
     loadRcloneLog()
+    loadMusic()
   }, [])
+
+  async function loadMusic() {
+    try { const r = await listMusic(); setMusicFiles(r.data.files || []) } catch (_) {}
+  }
+
+  async function handleMusicUpload(e) {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    setMusicUploading(true)
+    for (const f of files) { try { await uploadMusic(f) } catch (_) {} }
+    setMusicUploading(false)
+    loadMusic()
+    e.target.value = ''
+  }
+
+  async function handleMusicDelete(filename) {
+    if (!confirm(`Remover "${filename}"?`)) return
+    try { await deleteMusic(filename); loadMusic() } catch (_) {}
+  }
 
   async function loadRcloneLog() {
     try {
@@ -469,6 +492,39 @@ export default function Maintenance() {
           </pre>
         </div>
       )}
+
+      {/* Músicas MP3 para Slideshow */}
+      <div className="bg-white rounded-xl shadow p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold flex items-center gap-2 text-gray-900">
+            <Music className="w-5 h-5 text-purple-600" /> Músicas para Slideshow
+          </h2>
+          <button
+            onClick={() => musicInputRef.current?.click()}
+            disabled={musicUploading}
+            className="px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
+          >
+            {musicUploading ? <span className="animate-spin">⏳</span> : '+'} Upload MP3
+          </button>
+          <input ref={musicInputRef} type="file" accept=".mp3,.m4a,.aac,.ogg,.wav" multiple className="hidden" onChange={handleMusicUpload} />
+        </div>
+        {musicFiles.length === 0 ? (
+          <p className="text-sm text-gray-500">Nenhuma música. Faça upload de arquivos MP3.</p>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {musicFiles.map((f) => (
+              <li key={f} className="flex items-center justify-between py-2">
+                <span className="text-sm text-gray-800 flex items-center gap-2">
+                  <Music className="w-4 h-4 text-purple-400" /> {f}
+                </span>
+                <button onClick={() => handleMusicDelete(f)} className="text-red-400 hover:text-red-600 p-1">
+                  <X className="w-4 h-4" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* Recomendações */}
       {audit && (

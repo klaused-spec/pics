@@ -128,7 +128,7 @@ def get_album_media(
     query = db.query(Media).join(album_media).filter(album_media.c.album_id == album_id)
     total = query.count()
     items = (
-        query.order_by(Media.date_taken.desc())
+        query.order_by(album_media.c.position.asc().nullslast(), Media.date_taken.desc())
         .offset((page - 1) * per_page)
         .limit(per_page)
         .all()

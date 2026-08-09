@@ -305,6 +305,29 @@ if (Test-Path (Join-Path $frontendDist "index.html")) {
 }
 
 # ─── Modelos ONNX (face recognition) ─────────────────────────────────────────
+Header "Myrtille (Acesso Remoto via Browser)"
+$myrtilleMsi = Join-Path $ROOT "tools\Myrtille_2.9.2_x86_x64_Setup.msi"
+if (Test-Path $myrtilleMsi) {
+    $myrtilleInstalled = Get-Service "Myrtille.Services" -ErrorAction SilentlyContinue
+    if ($myrtilleInstalled) {
+        Ok "Myrtille ja instalado (servico Myrtille.Services encontrado)"
+    } else {
+        Info "Instalando Myrtille — requer privilegios de administrador e IIS habilitado..."
+        Info "Aguarde, pode demorar 1-2 minutos..."
+        $proc = Start-Process msiexec -ArgumentList "/i `"$myrtilleMsi`" /qn /norestart" -Wait -PassThru -Verb RunAs
+        if ($proc.ExitCode -eq 0) {
+            Ok "Myrtille instalado com sucesso"
+            Ok "Acesso: https://<dominio>:8443/Myrtille"
+        } else {
+            Err "Instalacao do Myrtille falhou (codigo $($proc.ExitCode))"
+            Err "Instale manualmente: $myrtilleMsi"
+        }
+    }
+} else {
+    Info "Setup do Myrtille nao encontrado em tools\ — pulando"
+    Info "Para instalar depois: tools\Myrtille_2.9.2_x86_x64_Setup.msi"
+}
+
 Header "Modelos ONNX (reconhecimento facial)"
 $models = @('1k3d68.onnx','2d106det.onnx','det_10g.onnx','genderage.onnx','w600k_r50.onnx')
 $modelsDir = Join-Path $ROOT "backend\models"

@@ -164,5 +164,29 @@ export const restoreDatabase = (file) => {
 // Mobile
 export const getMobileApks = () => api.get('/mobile/apks')
 export const getMobileApkUrl = (filename) => `${backendRoot}/api/mobile/apks/${encodeURIComponent(filename)}`
+export const listMusic = () => api.get('/music')
+export const uploadMusic = (file) => {
+  const fd = new FormData(); fd.append('file', file)
+  return api.post('/music/upload', fd)
+}
+export const deleteMusic = (filename) => api.delete(`/music/${encodeURIComponent(filename)}`)
+export const getMusicUrl = (filename) => `${backendRoot}/api/music/stream/${encodeURIComponent(filename)}`
 
+// Logs
+export const getWorkerLogs = () => api.get('/logs/workers')
+export const getWorkerLog = (name, n = 300) => api.get(`/logs/worker/${encodeURIComponent(name)}`, { params: { n } })
+export const getLogsStreamUrl = () => {
+  const token = localStorage.getItem('access_token')
+  return `${backendRoot}/api/logs/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`
+}
+
+// Slideshow render
+export const startSlideshowRender = (payload) => api.post('/slideshow-render/start', payload)
+export const getSlideshowRenderStatus = (slug) => api.get(`/slideshow-render/status/${slug}`)
+export const listSlideshowRenders = () => api.get('/slideshow-render/list')
+export const deleteSlideshowRender = (slug) => api.delete(`/slideshow-render/${slug}`)
+export const getSlideshowStreamUrl = (slug) => {
+  const token = localStorage.getItem('token')
+  return `${backendRoot}/api/slideshow-render/stream/${slug}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+}
 export default api

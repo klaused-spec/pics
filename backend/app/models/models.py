@@ -209,6 +209,26 @@ class AlbumTranscodeJob(Base):
     media = relationship("Media", foreign_keys=[media_id])
 
 
+class SlideshowRenderJob(Base):
+    """Job de renderização de slideshow em MP4 via FFmpeg."""
+    __tablename__ = "slideshow_render_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    album_id = Column(Integer, ForeignKey("albums.id"), nullable=True, index=True)
+    slug = Column(String(64), nullable=False, unique=True, index=True)  # ID público para compartilhamento
+    status = Column(String, default="pending")  # pending | running | done | failed
+    progress = Column(Integer, default=0)       # 0-100
+    output_path = Column(String, nullable=True)
+    output_filename = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    # Parâmetros de entrada serializados (JSON)
+    params = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    album = relationship("Album", foreign_keys=[album_id])
+
+
 class AiCache(Base):
     """Cache de descrições IA por hash do conteúdo. Sobrevive a reset de Media."""
     __tablename__ = "ai_cache"
